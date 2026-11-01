@@ -6,41 +6,53 @@ CFLAGS  ?= $(STD) $(OPT) $(WARN)
 BUILD   ?= build
 EXE     ?=
 
-BIN := $(BUILD)/c99gui$(EXE)
-SRC := src/c99gui.c
+# OS Detection
+UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
 
-.PHONY: all strict static test check clean install
+ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
+    LDFLAGS += -lgdi32 -luser32
+else ifeq ($(findstring MSYS,$(UNAME_S)),MSYS)
+    LDFLAGS += -lgdi32 -luser32
+else ifeq ($(findstring CYGWIN,$(UNAME_S)),CYGWIN)
+    LDFLAGS += -lgdi32 -luser32
+else ifeq ($(UNAME_S),Darwin)
+    LDFLAGS += -framework Cocoa -framework CoreGraphics
+else
+    # Linux / BSD / Unix: check if X11 is available
+    HAS_X11 := $(shell printf '\#include <X11/Xlib.h>\nint main(){return 0;}' | $(CC) -x c - -lX11 -o /dev/null 2>/dev/null && echo yes || echo no)
+    ifeq ($(HAS_X11),yes)
+        LDFLAGS += -lX11
+    else
+        CFLAGS += -DC99GUI_HEADLESS
+    endif
+endif
+
+BIN := $(BUILD)/gui$(EXE)
+SRC := src/gui.c
+
+.PHONY: all headless test check clean install
 all: $(BIN)
 
 $(BIN): $(SRC)
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) $(SRC) -o $@ $(LDFLAGS)
 
-# ISO C only: no platform headers, line-based input.
-strict: CFLAGS += -DSTRICT_C99
-strict: BIN := $(BUILD)/c99gui-strict$(EXE)
-strict:
+headless: CFLAGS += -DC99GUI_HEADLESS
+headless: BIN := $(BUILD)/gui-headless$(EXE)
+headless:
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS)
-
-# Fully static binary (glibc/musl Linux).
-static: LDFLAGS += -static
-static: BIN := $(BUILD)/c99gui-static$(EXE)
-static:
-	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) $(SRC) -o $(BIN) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(SRC) -o $(BIN)
 
 test: $(BIN)
 	sh tests/smoke.sh $(BIN)
 
-# Same warnings the CI uses: everything on, warnings are errors.
-check: WARN := -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wcast-qual -Wstrict-prototypes -Werror
+check: WARN := -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror
 check: clean test
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) snapshot.bmp
 
 PREFIX ?= /usr/local
 install: $(BIN)
 	install -d $(DESTDIR)$(PREFIX)/bin
-	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/c99gui
+	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/gui

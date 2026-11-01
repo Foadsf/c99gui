@@ -1,108 +1,86 @@
-# c99gui
+# c99gui (Desktop Pixel GUI)
 
-A single-file, zero-allocation, immediate-mode **terminal GUI in portable C99**.
-No libraries, no build system required, no heap. Truecolor, rounded windows,
-drop shadows, tabs, toggles, sliders, choices, progress bars and buttons, driven
-by keyboard (vim keys and arrows). Meant to be copied into new projects as a
-starting point.
+A monolithic, zero-allocation, immediate-mode **pixel-rendered desktop GUI in portable C99**.
+Uses zero third-party libraries, no GPU shaders, and no `<math.h>` dependency.
+
+Implements a **32-bit ARGB software rasterizer** in standard C99 with:
+- Sub-pixel anti-aliased rounded rectangles using squared-distance fields (no sqrt)
+- Alpha blending (`blend_argb`) with soft drop shadows
+- Bit-packed vector-scaled 4x5 glyph font
+- Immediate-mode widget library (panels, sidebar nav items, toggles, draggable sliders, buttons)
+- Real-time animated waveform canvas (fast parabolic sine approximation)
+- Native OS windowing backends:
+  - **Windows**: Win32 GDI (`StretchDIBits`)
+  - **Linux / BSD**: X11 (`XPutImage`) or Headless Software Framebuffer
+  - **macOS**: Cocoa / CoreGraphics via the pure C runtime (`objc_msgSend`)
+  - **Headless**: Full offscreen rasterizer with BMP snapshot export (`--snapshot`) and automated testing (`--test`)
 
 ```
- ╭──●─●─●─────────────────────✦─C99 GUI Template────────────────────────────╮
- │   1 Overview   2 Display   3 Telemetry   4 About                         │
- │  GENERAL ──────────────────────────────────────────────────────────────  │
- │     Notifications                                                ● ON    │
- │     Dark theme                                                   ● ON    │
- │     Volume                                     ━━━━━━━━━━━━──────   70   │
- │   ▸ Language                                               ‹ English ›   │
- │        Apply                                                             │
- │  Ready                       j/k Move  h/l Adjust  Enter Select  q Quit  │
- ╰──────────────────────────────────────────────────────────────────────────╯
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │ [● C99 STUDIO]   │  AUDIO AND PIPELINE CONTROLS                        │
+ │                  │                                                     │
+ │ ▸ DASHBOARD      │  HARDWARE V-SYNC LOCK                        [● ON] │
+ │   RENDERER       │  SUBPIXEL ANTI-ALIASING                      [● ON] │
+ │   TELEMETRY      │  MASTER OUTPUT GAIN         ━━━━━━━───────   72%    │
+ │                  │  MODULATION FREQUENCY       ━━━━──────────   45%    │
+ │  ACCENT THEME    │  ┌────────────────────────────────────────────────┐ │
+ │  (●)(●)(●)(●)    │  │ REALTIME SIGNAL WAVEFORM                       │ │
+ │                  │  │       /\    /\    /\    /\    /\    /\         │ │
+ │                  │  └────────────────────────────────────────────────┘ │
+ └────────────────────────────────────────────────────────────────────────┘
 ```
-(plain-text output of `c99gui --snapshot`; the real thing is colored.)
 
-## Build
+## Quick Build
 
-Pick whichever line matches your toolchain; the program is one file, `src/c99gui.c`.
+Pick the command for your compiler; the program is a single file, `src/gui.c`:
 
 | Toolchain | Command |
 |---|---|
-| GCC / Clang / any POSIX `cc` | `cc -std=c99 -O2 -Wall -Wextra -pedantic src/c99gui.c -o c99gui` |
-| `make` | `make` (add `CC=clang`, `make strict`, `make static`, `make check`) |
-| MSVC | `build.cmd` or `cl /std:c11 /W4 /O2 /MT /utf-8 src\c99gui.c /Fe:c99gui.exe` |
-| CMake | `cmake -B build && cmake --build build` (`-DC99GUI_STRICT=ON` for ISO-only) |
-| Strict ISO C99 (no OS headers) | `cc -std=c99 -DSTRICT_C99 src/c99gui.c -o c99gui` |
+| MSVC (Windows) | `build.cmd` or `cl /std:c11 /W4 /WX /O2 /MT /utf-8 src/gui.c` |
+| MinGW / MSYS2 GCC | `gcc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lgdi32 -luser32 -o gui.exe` |
+| Cygwin GCC / Clang | `gcc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lgdi32 -luser32 -o gui.exe` |
+| Linux / BSD (X11) | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lX11 -o gui` |
+| macOS (Cocoa) | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -framework Cocoa -framework CoreGraphics -o gui` |
+| Headless / Test | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic -DC99GUI_HEADLESS src/gui.c -o gui` |
+| CMake | `cmake -B build && cmake --build build` |
+| Make | `make` (or `make headless`, `make test`, `make check`) |
 
-Run `./c99gui` in a UTF-8, ANSI-capable terminal (Windows Terminal, conhost on
-Windows 10 1809+, any xterm-like emulator). Keys:
-
-| Key | Action |
-|---|---|
-| `j` `k` / `↓` `↑` / `Tab` `Shift-Tab` | move focus |
-| `h` `l` / `←` `→` | adjust slider, switch toggle/choice |
-| `Space` `Enter` | activate |
-| `1`–`4`, `PgUp` `PgDn` | switch tab |
-| `q` `Esc` `Ctrl-C` | quit |
-
-Options: `--snapshot` (headless, see below), `--256` (256-color palette),
-`--help`, `--version`. `C99GUI_COLOR=256|truecolor` overrides detection (256 is
-chosen automatically on Apple Terminal and the Linux console).
-
-## Use it as a template
-
-1. Copy `src/c99gui.c` (and `LICENSE`) into your project.
-2. Edit the **APPLICATION** section: `struct App` for your state, `app_frame()`
-   for your screens. Each widget is a single call per frame:
-
-   ```c
-   ui_toggle("Notifications", &a->notifications);
-   ui_slider("Volume", &a->volume, 0, 100, 5);
-   if (ui_button("Apply")) ui_status("Applied.");
-   ```
-3. Leave the engine and platform layer alone. All OS-specific code is in the
-   **PLATFORM LAYER** section and exports four functions: `sys_init`,
-   `sys_shutdown`, `sys_size`, `sys_key`.
-
-Behaviour you get without writing it: centred, resizable layout (re-laid-out on
-terminal resize), "terminal too small" message, differential redraw inside a
-synchronized-update block (no flicker), alt-screen with guaranteed restore of
-the terminal on exit, `Ctrl-C`, `SIGTERM`/`SIGHUP` and console close, dark/light
-themes, UTF-8 text clipping, and a one-frame re-render after any state change so
-the screen never lags a keystroke.
-
-### Gotchas
-
-- The source is **7-bit ASCII on purpose** (MSVC reads sources in the system
-  code page). Write glyphs as `\x` escapes. A hex escape swallows every hex
-  digit after it: write `"Fran\xC3\xA7" "ais"`, never `"\xA7ais"`.
-- Text is one cell per code point. East-Asian wide glyphs and emoji are not
-  measured; keep to single-width characters.
-- Every widget reads its label immediately and `ui_status` copies its text, so
-  locals and temporaries are safe to pass.
-- `FB_MAX_W x FB_MAX_H` (240x80) bounds the framebuffer; larger terminals are
-  filled up to that size.
-
-## Test
+## Command-Line Options
 
 ```sh
-make test                      # builds and runs tests/smoke.sh
-sh tests/smoke.sh build/c99gui # against any binary
+./gui --help            # Print command-line options
+./gui --version         # Print version (1.0.0)
+./gui --test            # Run automated headless widget and rasterizer tests
+./gui --snapshot out.bmp # Render one frame, export to 32-bit uncompressed BMP, and exit
+./gui --headless        # Run 120 simulation frames headlessly without opening a window
 ```
 
-`--snapshot` reads keys from stdin, renders an 80x24 frame as plain text and
-exits, so the UI is testable with `printf` and `grep` on every platform.
-`scripts/build-matrix.ps1` builds and tests every compiler/environment found on
-a Windows host (MSVC, MSYS2, Cygwin, WSL) with warnings as errors.
+## Architecture & Reusable Template
 
-## Platform support
+1. **State & Context (`GuiCtx ui`)**: Static 32-bit pixel buffer (`ui.px[760 * 480]`), mouse coordinates, button states, active and hot widget IDs. No heap allocation (`malloc`-free).
+2. **Software Rasterizer**:
+   - `draw_rrect`: Sub-pixel anti-aliased rounded rectangles. Uses squared distance `d2 = dx*dx + dy*dy` to compute fractional boundary coverage without floating-point `sqrt`.
+   - `draw_card`: Multi-layer drop shadow and border compositor.
+   - `glyph_bits` & `draw_text`: 4x5 compact bit-packed vector font.
+3. **Immediate-Mode Widgets**:
+   - `gui_begin_panel`: Structured container with header and separator.
+   - `gui_nav_item`: Sidebar button with hover and active selection state.
+   - `gui_toggle`: Animated pill switch.
+   - `gui_slider`: Draggable progress/value track with thumb and percentage readout.
+   - `gui_button`: Clickable button with instant click detection.
 
-| Platform | Input | Notes |
-|---|---|---|
-| Windows (MSVC, MinGW, clang) | `ReadConsoleInputW` | VT mode enabled automatically; UTF-8 code page set and restored |
-| Linux, macOS, BSD, Cygwin, MSYS2, WSL | termios + `pselect` | raw mode restored on exit and fatal signals |
-| anything else, or `-DSTRICT_C99` | `getchar` | one key per line (type key, press Enter) |
+## Verification
 
-See `CHANGELOG.md` for the verification status of each environment.
+Run the test suite against any binary:
+```sh
+sh tests/smoke.sh build/gui.exe
+```
+
+Run the Windows multi-compiler test matrix:
+```powershell
+pwsh scripts/build-matrix.ps1
+```
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT License. See [LICENSE](LICENSE).
