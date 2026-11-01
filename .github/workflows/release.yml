@@ -9,14 +9,15 @@ on:
       - main
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Dry run (upload artifacts without creating release)'
+      mode:
+        description: 'Mode: dry-run (upload only), publish-test (test publish prep), or release (full release)'
         required: false
-        default: 'true'
+        default: 'dry-run'
         type: choice
         options:
-          - 'true'
-          - 'false'
+          - dry-run
+          - publish-test
+          - release
       version:
         description: 'Version for notes extraction (e.g., 2.1.0)'
         required: false
@@ -29,6 +30,7 @@ jobs:
     outputs:
       is_tag: ${{ steps.check.outputs.is_tag }}
       is_dry_run: ${{ steps.check.outputs.is_dry_run }}
+      is_publish_test: ${{ steps.check.outputs.is_publish_test }}
       version: ${{ steps.check.outputs.version }}
     steps:
       - id: check
@@ -38,25 +40,35 @@ jobs:
             VER="${TAG#v}"  # Strip leading 'v'
             echo "is_tag=true" >> $GITHUB_OUTPUT
             echo "is_dry_run=false" >> $GITHUB_OUTPUT
+            echo "is_publish_test=false" >> $GITHUB_OUTPUT
             echo "version=$VER" >> $GITHUB_OUTPUT
           elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
-              echo "is_tag=false" >> $GITHUB_OUTPUT
-              echo "is_dry_run=true" >> $GITHUB_OUTPUT
-            else
-              echo "is_tag=false" >> $GITHUB_OUTPUT
-              echo "is_dry_run=false" >> $GITHUB_OUTPUT
-            fi
+            MODE="${{ github.event.inputs.mode }}"
             VER="${{ github.event.inputs.version }}"
             if [[ -z "$VER" ]]; then
               VER="${{ github.ref_name }}"
               VER="${VER#v}"
             fi
             echo "version=$VER" >> $GITHUB_OUTPUT
+            if [[ "$MODE" == "release" ]]; then
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=false" >> $GITHUB_OUTPUT
+              echo "is_publish_test=false" >> $GITHUB_OUTPUT
+            elif [[ "$MODE" == "publish-test" ]]; then
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=false" >> $GITHUB_OUTPUT
+              echo "is_publish_test=true" >> $GITHUB_OUTPUT
+            else
+              # dry-run (default)
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=true" >> $GITHUB_OUTPUT
+              echo "is_publish_test=false" >> $GITHUB_OUTPUT
+            fi
           else
             # pull_request = always dry-run
             echo "is_tag=false" >> $GITHUB_OUTPUT
             echo "is_dry_run=true" >> $GITHUB_OUTPUT
+            echo "is_publish_test=false" >> $GITHUB_OUTPUT
             echo "version=UNRELEASED" >> $GITHUB_OUTPUT
           fi
 
@@ -193,10 +205,10 @@ jobs:
             SHA256SUMS.txt
           retention-days: 7
 
-  # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release
+  # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release (or shows dry-run summary)
   publish:
     needs: [detect-mode, build]
-    if: needs.detect-mode.outputs.is_tag == 'true' || (needs.detect-mode.outputs.is_dry_run == 'true' && github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+    if: needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
     runs-on: ubuntu-latest
     outputs:
       notes_preview: ${{ steps.extract-notes.outputs.preview }}
@@ -262,11 +274,11 @@ jobs:
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
 
-      - name: Show dry-run summary
-        if: needs.detect-mode.outputs.is_dry_run == 'true'
+      - name: Show publish-test summary
+        if: needs.detect-mode.outputs.is_publish_test == 'true'
         shell: bash
         run: |
-          echo "=== DRY-RUN SUMMARY ==="
+          echo "=== PUBLISH-TEST SUMMARY ==="
           echo "Version: ${{ needs.detect-mode.outputs.version }}"
           echo "Release notes preview: ${{ steps.extract-notes.outputs.preview }}"
           echo "Artifacts:"
@@ -274,4 +286,15 @@ jobs:
           echo "Combined SHA256SUMS:"
           cat COMBINED_SHA256SUMS.txt
           echo ""
-          echo "To create real release: push a tag (e.g., git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }})"
+          echo "Publish preparation successful. To create real release, push a tag:"
+          echo "  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}"
+
+      - name: Show dry-run summary
+        if: needs.detect-mode.outputs.is_dry_run == 'true'
+        shell: bash
+        run: |
+          echo "=== DRY-RUN SUMMARY ==="
+          echo "Version: ${{ needs.detect-mode.outputs.version }}"
+          echo "Artifacts uploaded (no release created)"
+          echo "To test publish preparation, use mode: publish-test"
+          echo "To create real release, use mode: release or push a tag"
