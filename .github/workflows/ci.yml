@@ -1,0 +1,54 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        cc: [gcc, clang]
+        mode: [default, strict]
+        exclude:
+          - { os: macos-latest, cc: gcc }   # gcc is an alias for clang there
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          mkdir -p build
+          def=""; [ "${{ matrix.mode }}" = strict ] && def="-DSTRICT_C99"
+          ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
+            -Wcast-qual -Wstrict-prototypes -Werror $def src/c99gui.c -o build/c99gui
+      - name: Test
+        run: sh tests/smoke.sh build/c99gui
+
+  windows-msvc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build
+        shell: cmd
+        run: build.cmd
+      - name: Test
+        shell: bash
+        run: sh tests/smoke.sh build/c99gui.exe
+
+  windows-msys2:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Build and test
+        run: |
+          mkdir -p build
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
+            src/c99gui.c -o build/c99gui.exe
+          sh tests/smoke.sh build/c99gui.exe
