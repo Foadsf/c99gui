@@ -226,7 +226,7 @@ jobs:
         id: extract-notes
         shell: bash
         run: |
-          sh scripts/extract-notes.sh "${{ needs.detect-mode.outputs.version }}" RELEASE_NOTES.md
+          bash scripts/extract-notes.sh "${{ needs.detect-mode.outputs.version }}" RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
       - name: Create SHA256SUMS
@@ -280,7 +280,7 @@ jobs:
         shell: bash
         run: |
           echo "=== NEGATIVE CHECK: 9.9.9 (should fail) ==="
-          if sh scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
+          if bash scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
             echo "ERROR: Extraction produced non-empty notes for non-existent 9.9.9" >&2
             cat /tmp/notes_999.md
             exit 1

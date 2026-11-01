@@ -3,7 +3,7 @@
 # Usage: extract-notes.sh VERSION OUTFILE
 # Strips a leading 'v' from version; exits 1 with message if section missing or empty
 
-set -euo pipefail
+set -eu
 
 if [ $# -ne 2 ]; then
     echo "Usage: $0 VERSION OUTFILE" >&2

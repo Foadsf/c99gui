@@ -20,10 +20,10 @@ jobs:
       - uses: actions/checkout@v7
       - name: Test extract-notes.sh
         run: |
-          sh scripts/extract-notes.sh 2.1.0 /tmp/notes_210.md
+          bash scripts/extract-notes.sh 2.1.0 /tmp/notes_210.md
           cat /tmp/notes_210.md
           echo "---"
-          if sh scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
+          if bash scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
             echo "FAIL: 9.9.9 should not have notes"
             exit 1
           fi
