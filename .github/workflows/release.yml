@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - fix/ci-release  # Enable dry-run testing on the fix branch
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       dry_run:
@@ -16,7 +21,34 @@ on:
           - 'false'
 
 jobs:
+  # Determine if this is a real release (tag push) or dry-run
+  detect-mode:
+    runs-on: ubuntu-latest
+    outputs:
+      is_tag: ${{ steps.check.outputs.is_tag }}
+      is_dry_run: ${{ steps.check.outputs.is_dry_run }}
+    steps:
+      - id: check
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "is_dry_run=false" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=true" >> $GITHUB_OUTPUT
+            else
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # push to branch or pull_request = always dry-run
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "is_dry_run=true" >> $GITHUB_OUTPUT
+          fi
+
   build:
+    needs: detect-mode
     strategy:
       fail-fast: false
       matrix:
@@ -117,8 +149,8 @@ jobs:
             sha256sum c99gui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > SHA256SUMS.txt
           fi
 
-      - name: Upload artifacts (dry run)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'
+      - name: Upload artifacts (dry-run or tag)
+        if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: c99gui-${{ github.ref_name }}-${{ matrix.target }}
@@ -127,8 +159,28 @@ jobs:
             SHA256SUMS.txt
           retention-days: 7
 
+      - name: Create release notes
+        if: needs.detect-mode.outputs.is_tag == 'true'
+        run: |
+          TAG="${{ github.ref_name }}"
+          if grep -q "^## \[$TAG\]" CHANGELOG.md 2>/dev/null; then
+            awk -v tag="## \\[$TAG\\]" '
+              $0 ~ tag { found=1; next }
+              found && /^## \[/ { found=0 }
+              found { print }
+            ' CHANGELOG.md > RELEASE_NOTES.md
+          else
+            echo "## Release ${{ github.ref_name }}" > RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            echo "Automated release build with all four c99gui programs:" >> RELEASE_NOTES.md
+            echo "- c99gui-tui: Terminal UI (zero dependencies)" >> RELEASE_NOTES.md
+            echo "- c99gui-pixel: Pixel desktop GUI" >> RELEASE_NOTES.md
+            echo "- c99gui-vector: Vector desktop GUI" >> RELEASE_NOTES.md
+            echo "- c99gui-suite: Comprehensive vector GUI suite" >> RELEASE_NOTES.md
+          fi
+
       - name: Upload release assets
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+        if: needs.detect-mode.outputs.is_tag == 'true'
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -136,40 +188,3 @@ jobs:
             SHA256SUMS.txt
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
-
-  # Aggregate checksums and create release notes
-  release-notes:
-    runs-on: ubuntu-latest
-    outputs:
-      notes_exist: ${{ steps.check.outputs.exists }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Check if release notes section exists in CHANGELOG
-        id: check
-        run: |
-          TAG="${{ github.ref_name }}"
-          if grep -q "^## \[$TAG\]" CHANGELOG.md 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-      - name: Extract release notes from CHANGELOG
-        if: steps.check.outputs.exists == 'true'
-        run: |
-          TAG="${{ github.ref_name }}"
-          # Extract section between ## [$TAG] and next ## [
-          awk -v tag="## \\[$TAG\\]" '
-            $0 ~ tag { found=1; next }
-            found && /^## \[/ { found=0 }
-            found { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-      - name: Create default release notes
-        if: steps.check.outputs.exists == 'false'
-        run: |
-          echo "## Release ${{ github.ref_name }}" > RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "Automated release build with all four c99gui programs:" >> RELEASE_NOTES.md
-          echo "- c99gui-tui: Terminal UI (zero dependencies)" >> RELEASE_NOTES.md
-          echo "- c99gui-pixel: Pixel desktop GUI" >> RELEASE_NOTES.md
-          echo "- c99gui-vector: Vector desktop GUI" >> RELEASE_NOTES.md
-          echo "- c99gui-suite: Comprehensive vector GUI suite" >> RELEASE_NOTES.md

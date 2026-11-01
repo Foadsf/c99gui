@@ -8,7 +8,7 @@ A collection of four single-file, zero-allocation GUI programs in portable C99. 
 
 **Source:** `src/tui/c99gui.c`  
 **Dependencies:** None (standard C library only)  
-**Status:** ✅ CI verified on all platforms
+**Status:** ✅ CI builds and tests on all platforms
 
 A zero-allocation, immediate-mode terminal GUI in C99. Uses a software framebuffer of UTF-8 cells with 24-bit color. All state lives in static storage — no heap allocations.
 
@@ -26,7 +26,7 @@ cl /std:c11 /W4 /O2 /MT /utf-8 src\tui\c99gui.c /Fe:c99gui-tui.exe
 
 **Source:** `src/pixel/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Status:** ✅ CI verified on all platforms
+**Status:** ✅ CI builds on all platforms (headless test)
 
 A monolithic pixel-rendered desktop GUI with a 32-bit ARGB software rasterizer, sub-pixel anti-aliased rounded rectangles, alpha blending, soft drop shadows, and bit-packed vector-scaled font.
 
@@ -53,7 +53,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/pixel/gui.c -o c99gui-pixel
 
 **Source:** `src/vector/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Status:** ✅ CI verified on all platforms
+**Status:** ✅ CI builds on all platforms (headless test)
 
 A resolution-independent SDF and Bézier vector graphics engine with SVG-style quadratic Bézier typography, sub-pixel anti-aliasing, and real-time DPI scaling (0.75x – 1.30x).
 
@@ -80,7 +80,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/vector/gui.c -o c99gui-vector
 
 **Source:** `src/suite/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Status:** ✅ CI verified on all platforms
+**Status:** ✅ CI builds on all platforms (headless test)
 
 A comprehensive vector GUI framework with five interactive workspaces: Controls Suite, Node Studio, Data & Charts, Color Picker, and Scaling & Modals. Features scrollable containers, multi-column layouts, animated widgets, dropdown menus, modal dialogs, and toast notifications.
 
@@ -142,10 +142,12 @@ sh tests/smoke.sh build/c99gui-suite
 
 ## CI Status
 
-GitHub Actions verifies all four programs on:
-- **Linux** (Ubuntu): GCC and Clang, with X11 and headless modes
-- **macOS**: Clang, with Cocoa and headless modes
+GitHub Actions builds all four programs on:
+- **Linux** (Ubuntu): GCC and Clang, X11 and headless modes
+- **macOS**: Clang, Cocoa and headless modes  
 - **Windows**: MSVC (x64) and MSYS2 UCRT64 GCC, default and headless modes
+
+CI compiles with platform backends (X11, Cocoa, GDI) and runs headless tests (`--test`, `--snapshot`). Window creation cannot be tested on CI runners.
 
 All builds use strict warnings: `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (GCC/Clang) or `/W4 /WX` (MSVC).
 
