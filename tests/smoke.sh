@@ -30,28 +30,39 @@ check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"
 # Validate BMP: read width and height from header (bytes 18-21 and 22-25, little-endian)
 # Expected size = 54 (header) + width * height * 4 (32-bit ARGB)
 if [ -f "$TMP_BMP" ]; then
-    # Read width and height as little-endian 32-bit integers
-    # Using od with proper byte extraction
-    WIDTH=$(od -An -tu1 -j18 -N4 "$TMP_BMP" | awk '{print $1 + $2*256 + $3*65536 + $4*16777216}')
-    HEIGHT=$(od -An -tu1 -j22 -N4 "$TMP_BMP" | awk '{print $1 + $2*256 + $3*65536 + $4*16777216}')
+    # Read 4 bytes at offset 18 (width) and 22 (height) as little-endian
+    # Using xxd to get hex bytes, then convert
+    WIDTH_HEX=$(xxd -s 18 -l 4 -p "$TMP_BMP" 2>/dev/null | sed 's/\(..\)\(..\)\(..\)\(..\).*/\4\3\2\1/')
+    HEIGHT_HEX=$(xxd -s 22 -l 4 -p "$TMP_BMP" 2>/dev/null | sed 's/\(..\)\(..\)\(..\)\(..\).*/\4\3\2\1/')
     
-    # Handle signed height (negative means top-down) - take absolute value
-    HEIGHT=${HEIGHT#-}
-    
-    if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] && [ "$HEIGHT" -gt 0 ]; then
-        EXPECTED_SIZE=$((54 + WIDTH * HEIGHT * 4))
-        ACTUAL_SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
+    if [ -n "$WIDTH_HEX" ] && [ -n "$HEIGHT_HEX" ]; then
+        # Convert hex to decimal
+        WIDTH=$(printf '%d' "0x$WIDTH_HEX" 2>/dev/null || echo 0)
+        HEIGHT=$(printf '%d' "0x$HEIGHT_HEX" 2>/dev/null || echo 0)
         
-        if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
-            pass=$((pass + 1))
-            printf 'ok   snapshot size correct (%dx%d = %s bytes)\n' "$WIDTH" "$HEIGHT" "$ACTUAL_SIZE"
+        # Handle negative height (top-down bitmap)
+        if [ "$HEIGHT" -lt 0 ]; then
+            HEIGHT=$(( -HEIGHT ))
+        fi
+        
+        if [ "$WIDTH" -gt 0 ] && [ "$HEIGHT" -gt 0 ]; then
+            EXPECTED_SIZE=$((54 + WIDTH * HEIGHT * 4))
+            ACTUAL_SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
+            
+            if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
+                pass=$((pass + 1))
+                printf 'ok   snapshot size correct (%dx%d = %s bytes)\n' "$WIDTH" "$HEIGHT" "$ACTUAL_SIZE"
+            else
+                fail=$((fail + 1))
+                printf 'FAIL snapshot size mismatch (expected %s, got %s for %dx%d)\n' "$EXPECTED_SIZE" "$ACTUAL_SIZE" "$WIDTH" "$HEIGHT"
+            fi
         else
             fail=$((fail + 1))
-            printf 'FAIL snapshot size mismatch (expected %s, got %s for %dx%d)\n' "$EXPECTED_SIZE" "$ACTUAL_SIZE" "$WIDTH" "$HEIGHT"
+            printf 'FAIL invalid BMP dimensions (got %dx%d)\n' "$WIDTH" "$HEIGHT"
         fi
     else
         fail=$((fail + 1))
-        printf 'FAIL could not read valid BMP dimensions (got %dx%d)\n' "${WIDTH:-0}" "${HEIGHT:-0}"
+        printf 'FAIL could not read BMP header\n'
     fi
     rm -f "$TMP_BMP"
 else
