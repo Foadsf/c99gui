@@ -119,8 +119,11 @@ TMP_CORRUPT="/tmp/c99gui_snap_corrupt_$$.bmp"
 if [ -f "$TMP_BMP" ]; then
     # Copy original, then corrupt byte at offset 18 (width LSB)
     cp "$TMP_BMP" "$TMP_CORRUPT"
-    # Write a different byte (0x00) at offset 18
-    if printf '\000' | dd of="$TMP_CORRUPT" bs=1 seek=18 count=1 conv=notrunc 2>/dev/null; then
+    # Read the current byte at offset 18 and XOR with 0xFF to get a different value
+    ORIG_BYTE=$(od -An -tu1 -j18 -N1 "$TMP_BMP" | tr -d ' ')
+    NEW_BYTE=$((ORIG_BYTE ^ 255))
+    # Write the XOR'd byte at offset 18
+    if printf "\\$(printf '%03o' "$NEW_BYTE")" | dd of="$TMP_CORRUPT" bs=1 seek=18 count=1 conv=notrunc 2>/dev/null; then
         if validate_bmp "$TMP_CORRUPT"; then
             fail=$((fail + 1))
             printf 'FAIL negative control: corrupted-width BMP should have been rejected\n'

@@ -26,6 +26,7 @@ cl /std:c11 /W4 /O2 /MT /utf-8 src\tui\c99gui.c /Fe:c99gui-tui.exe
 
 **Source:** `src/pixel/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
 **Status:** ✅ CI builds on all platforms (headless test)
 
 A monolithic pixel-rendered desktop GUI with a 32-bit ARGB software rasterizer, sub-pixel anti-aliased rounded rectangles, alpha blending, soft drop shadows, and bit-packed vector-scaled font.
@@ -53,6 +54,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/pixel/gui.c -o c99gui-pixel
 
 **Source:** `src/vector/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
 **Status:** ✅ CI builds on all platforms (headless test)
 
 A resolution-independent SDF and Bézier vector graphics engine with SVG-style quadratic Bézier typography, sub-pixel anti-aliasing, and real-time DPI scaling (0.75x – 1.30x).
@@ -80,6 +82,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/vector/gui.c -o c99gui-vector
 
 **Source:** `src/suite/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
 **Status:** ✅ CI builds on all platforms (headless test)
 
 A comprehensive vector GUI framework with five interactive workspaces: Controls Suite, Node Studio, Data & Charts, Color Picker, and Scaling & Modals. Features scrollable containers, multi-column layouts, animated widgets, dropdown menus, modal dialogs, and toast notifications.
