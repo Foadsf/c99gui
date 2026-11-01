@@ -172,7 +172,7 @@ jobs:
       - name: Sanitize ref name for artifact naming
         shell: bash
         run: |
-          REF_SAFE=$(echo '${{ github.ref_name }}" | tr '/' '-''
+          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
           echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
 
       - name: Create archive with top-level directory
@@ -205,7 +205,7 @@ jobs:
       
       - name: Sanitize ref name
         run: |
-          REF_SAFE=$(echo '${{ github.ref_name }}" | tr '/' '-''
+          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
           echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
       
       - name: Download all artifacts
