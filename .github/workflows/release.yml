@@ -131,31 +131,38 @@ jobs:
           & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\suite\gui.c /Febuild\c99gui-suite.exe
           Copy-Item LICENSE build\
 
+      - name: Sanitize ref name for artifact naming
+        shell: bash
+        run: |
+          # Replace / with - for valid artifact names (NTFS-compatible)
+          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
+
       - name: Create archive
         shell: bash
         run: |
           cd build
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a ../c99gui-${{ github.ref_name }}-${{ matrix.target }}.zip *.exe LICENSE
+            7z a ../c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.zip *.exe LICENSE
           else
-            tar czvf ../c99gui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz *
+            tar czvf ../c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.tar.gz *
           fi
           cd ..
           
           # Generate SHA256 checksums
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            sha256sum c99gui-${{ github.ref_name }}-${{ matrix.target }}.zip > SHA256SUMS.txt
+            sha256sum c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.zip > SHA256SUMS.txt
           else
-            sha256sum c99gui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > SHA256SUMS.txt
+            sha256sum c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.tar.gz > SHA256SUMS.txt
           fi
 
       - name: Upload artifacts (dry-run or tag)
         if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: c99gui-${{ github.ref_name }}-${{ matrix.target }}
+          name: c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}
           path: |
-            c99gui-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+            c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.${{ matrix.archive }}
             SHA256SUMS.txt
           retention-days: 7
 
@@ -184,7 +191,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            c99gui-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+            c99gui-${{ env.REF_SAFE }}-${{ matrix.target }}.${{ matrix.archive }}
             SHA256SUMS.txt
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
