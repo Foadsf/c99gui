@@ -226,49 +226,25 @@ jobs:
         id: extract-notes
         shell: bash
         run: |
-          TAG="${{ needs.detect-mode.outputs.version }}"
-          # Search for exact heading: ## [TAG] or ## [vTAG] (fixed-string match, not regex)
-          HEADING="## [${TAG}]"
-          if ! grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
-            HEADING="## [v${TAG}]"
-            if ! grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
-              echo "ERROR: No changelog section found for version ${TAG}" >&2
-              echo "notes_found=false" >> $GITHUB_OUTPUT
-              exit 1
-            fi
-          fi
-          # Extract from the heading to the next ## [ (exact fixed-string)
-          awk -v h="${HEADING}" '
-            index($0, h) == 1 { found=1; next }
-            found && index($0, "## [") == 1 { exit }
-            found { print }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-          # Fail if notes are empty
-          if [ ! -s RELEASE_NOTES.md ]; then
-            echo "ERROR: Extracted release notes are empty for version ${TAG}" >&2
-            echo "notes_found=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          echo "notes_found=true" >> $GITHUB_OUTPUT
-          # Print full notes for the summary
+          sh scripts/extract-notes.sh "${{ needs.detect-mode.outputs.version }}" RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
-      - name: Create combined SHA256SUMS
+      - name: Create SHA256SUMS
         shell: bash
         run: |
           ls -la ./release-artifacts/
           cd ./release-artifacts
           # Find all archives and create combined checksums
-          > ../COMBINED_SHA256SUMS.txt
+          > ../SHA256SUMS.txt
           for archive in *.tar.gz *.zip; do
             if [ -f "$archive" ]; then
-              sha256sum "$archive" >> ../COMBINED_SHA256SUMS.txt
+              sha256sum "$archive" >> ../SHA256SUMS.txt
             fi
           done
           cd ..
           # Verify all checksums
           cd ./release-artifacts
-          sha256sum -c ../COMBINED_SHA256SUMS.txt
+          sha256sum -c ../SHA256SUMS.txt
           cd ..
 
       - name: Create release (real)
@@ -278,7 +254,7 @@ jobs:
           files: |
             release-artifacts/*.tar.gz
             release-artifacts/*.zip
-            COMBINED_SHA256SUMS.txt
+            SHA256SUMS.txt
           body_path: RELEASE_NOTES.md
           fail_on_unmatched_files: true
 
@@ -293,8 +269,8 @@ jobs:
           echo ""
           echo "Artifacts:"
           ls -la release-artifacts/
-          echo "Combined SHA256SUMS:"
-          cat COMBINED_SHA256SUMS.txt
+          echo "SHA256SUMS:"
+          cat SHA256SUMS.txt
           echo ""
           echo "Publish preparation successful. To create real release, push a tag:"
           echo '  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}'
@@ -304,22 +280,7 @@ jobs:
         shell: bash
         run: |
           echo "=== NEGATIVE CHECK: 9.9.9 (should fail) ==="
-          TAG="9.9.9"
-          HEADING="## [${TAG}]"
-          if grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
-            HEADING="## [v${TAG}]"
-            if grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
-              echo "ERROR: Found unexpected changelog section for 9.9.9" >&2
-              exit 1
-            fi
-          fi
-          # Extraction should produce empty output
-          awk -v h="## [${TAG}]" '
-            index($0, h) == 1 { found=1; next }
-            found && index($0, "## [") == 1 { exit }
-            found { print }
-          ' CHANGELOG.md > /tmp/notes_999.md
-          if [ -s /tmp/notes_999.md ]; then
+          if sh scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
             echo "ERROR: Extraction produced non-empty notes for non-existent 9.9.9" >&2
             cat /tmp/notes_999.md
             exit 1
