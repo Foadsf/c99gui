@@ -1,49 +1,118 @@
 name: ci
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main, fix/ci-release]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  posix:
+  # Linux: GCC and Clang, X11 and headless
+  linux:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
         cc: [gcc, clang]
         mode: [default, headless]
-        exclude:
-          - { os: macos-latest, cc: gcc }
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install X11 (Linux)
-        if: runner.os == 'Linux' && matrix.mode == 'default'
+      - name: Install X11
+        if: matrix.mode == 'default'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev
-      - name: Build
+      - name: Build all four programs
         run: |
           mkdir -p build
-          flags=""
-          [ "${{ matrix.mode }}" = headless ] && flags="-DC99GUI_HEADLESS"
-          if [ "${{ runner.os }}" = macOS ]; then
-            flags="$flags -framework Cocoa -framework CoreGraphics"
-          elif [ "${{ matrix.mode }}" = default ]; then
-            flags="$flags -lX11"
-          fi
-          ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow \
-            -Werror $flags src/gui.c -o build/gui
-      - name: Test
-        run: sh tests/smoke.sh build/gui
+          flags="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow"
+          [ "${{ matrix.mode }}" = headless ] && flags="$flags -DC99GUI_HEADLESS"
+          [ "${{ matrix.mode }}" = default ] && flags="$flags -lX11"
+          
+          # TUI - no graphics libraries
+          ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/tui/c99gui.c -o build/c99gui-tui
+          
+          # Pixel GUI
+          ${{ matrix.cc }} $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
+          
+          # Vector GUI
+          ${{ matrix.cc }} $flags -Werror src/vector/gui.c -o build/c99gui-vector
+          
+          # Suite GUI
+          ${{ matrix.cc }} $flags -Werror src/suite/gui.c -o build/c99gui-suite
+      - name: Test all programs
+        run: |
+          chmod +x tests/smoke.sh tests/tui_smoke.sh
+          sh tests/tui_smoke.sh build/c99gui-tui
+          sh tests/smoke.sh build/c99gui-pixel
+          sh tests/smoke.sh build/c99gui-vector
+          sh tests/smoke.sh build/c99gui-suite
 
+  # macOS: Clang only, Cocoa and headless
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [default, headless]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build all four programs
+        run: |
+          mkdir -p build
+          flags="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow"
+          [ "${{ matrix.mode }}" = headless ] && flags="$flags -DC99GUI_HEADLESS"
+          [ "${{ matrix.mode }}" = default ] && flags="$flags -framework Cocoa -framework CoreGraphics"
+          
+          # TUI - no graphics libraries
+          clang -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/tui/c99gui.c -o build/c99gui-tui
+          
+          # Pixel GUI
+          clang $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
+          
+          # Vector GUI
+          clang $flags -Werror src/vector/gui.c -o build/c99gui-vector
+          
+          # Suite GUI
+          clang $flags -Werror src/suite/gui.c -o build/c99gui-suite
+      - name: Test all programs
+        run: |
+          chmod +x tests/smoke.sh tests/tui_smoke.sh
+          sh tests/tui_smoke.sh build/c99gui-tui
+          sh tests/smoke.sh build/c99gui-pixel
+          sh tests/smoke.sh build/c99gui-vector
+          sh tests/smoke.sh build/c99gui-suite
+
+  # Windows MSVC: x64, default and headless
   windows-msvc:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [default, headless]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Build
+      - name: Build all four programs
         shell: cmd
-        run: build.cmd
-      - name: Test
+        run: |
+          mkdir build
+          set DEFS=
+          if "${{ matrix.mode }}"=="headless" set DEFS=/DC99GUI_HEADLESS
+          
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\tui\c99gui.c /Febuild\c99gui-tui.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\pixel\gui.c /Febuild\c99gui-pixel.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\vector\gui.c /Febuild\c99gui-vector.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\suite\gui.c /Febuild\c99gui-suite.exe
+      - name: Test all programs
         shell: bash
-        run: sh tests/smoke.sh build/gui.exe
+        run: |
+          chmod +x tests/smoke.sh tests/tui_smoke.sh
+          sh tests/tui_smoke.sh build/c99gui-tui.exe
+          sh tests/smoke.sh build/c99gui-pixel.exe
+          sh tests/smoke.sh build/c99gui-vector.exe
+          sh tests/smoke.sh build/c99gui-suite.exe
 
+  # Windows MSYS2 UCRT64: GCC
   windows-msys2:
     runs-on: windows-latest
     defaults:
@@ -55,9 +124,21 @@ jobs:
         with:
           msystem: UCRT64
           install: mingw-w64-ucrt-x86_64-gcc
-      - name: Build and test
+      - name: Build all four programs
         run: |
           mkdir -p build
-          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror \
-            src/gui.c -lgdi32 -luser32 -o build/gui.exe
-          sh tests/smoke.sh build/gui.exe
+          
+          # TUI - no graphics libraries
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/tui/c99gui.c -o build/c99gui-tui.exe
+          
+          # GUIs - GDI32
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/pixel/gui.c -lgdi32 -luser32 -o build/c99gui-pixel.exe
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/vector/gui.c -lgdi32 -luser32 -o build/c99gui-vector.exe
+          gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/suite/gui.c -lgdi32 -luser32 -o build/c99gui-suite.exe
+      - name: Test all programs
+        run: |
+          chmod +x tests/smoke.sh tests/tui_smoke.sh
+          sh tests/tui_smoke.sh build/c99gui-tui.exe
+          sh tests/smoke.sh build/c99gui-pixel.exe
+          sh tests/smoke.sh build/c99gui-vector.exe
+          sh tests/smoke.sh build/c99gui-suite.exe

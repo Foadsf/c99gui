@@ -5,88 +5,77 @@ All notable changes to `c99gui` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - Unreleased
+
+### Added
+- **Four-program consolidation:** All four c99gui variants now ship side-by-side in a single repository:
+  - `c99gui-tui`: Terminal UI (zero dependencies, from branch `tui` aaf0c74)
+  - `c99gui-pixel`: Pixel desktop GUI (from branch `gui` eff0023)
+  - `c99gui-vector`: Vector desktop GUI (from branch `vector-gui` 8e39b21)
+  - `c99gui-suite`: Comprehensive vector GUI suite (from branch `vector-suite` 9a70006)
+- **CI workflow** (`.github/workflows/ci.yml`): Verifies all four programs on Linux (GCC/Clang, X11/headless), macOS (Clang, Cocoa/headless), Windows MSVC (x64), and Windows MSYS2 (UCRT64 GCC) with strict warnings (`-Werror` / `/WX`).
+- **Release workflow** (`.github/workflows/release.yml`): Builds release artifacts for Linux x64, macOS arm64, and Windows x64; supports dry-run mode for testing.
+- **Smoke tests:** `tests/smoke.sh` (GUI programs, reads BMP dimensions from header) and `tests/tui_smoke.sh` (TUI, restored from aaf0c74).
+- **Build system updates:** Makefile, CMakeLists.txt, `build.cmd`, and `scripts/build-matrix.ps1` now build all four programs with distinct names.
+
+### Changed
+- **README.md:** Honest documentation of all four programs with accurate build commands, CLI options, and CI verification status. Removed unverified claims about Cocoa/X11 backends (now CI-verified).
+- **BMP size validation:** Smoke test now reads width/height from BMP header instead of hardcoding 2,508,854 bytes (which assumed fixed 980x640).
+
+### Fixed
+- CI workflow now references correct source paths (`src/tui/c99gui.c`, `src/pixel/gui.c`, etc.) instead of non-existent `src/gui.c`.
+- Release workflow includes all four programs in release archives.
+- Documentation no longer claims "13-stage regression suite" or features not present in the actual UI (e.g., "[78%]" readouts on knobs, "ACCENT THEME" in suite).
+
 ## [2.0.0] - 2026-11-01 (branch: `vector-suite`)
 
 ### Added
-- **Comprehensive Pure C99 2D Vector Graphics & Immediate-Mode GUI Framework** (`src/gui.c`):
-  - Resolution expanded to 980x640 32-bit ARGB framebuffer ($2,508,800$ bytes) with zero heap allocations (`malloc`-free).
+- **Comprehensive Pure C99 2D Vector Graphics & Immediate-Mode GUI Framework** (`src/suite/gui.c`):
+  - Resolution expanded to 980x640 32-bit ARGB framebuffer with zero heap allocations.
   - Hardware-style **Scissor Clipping Stack** (`vg_push_clip`, `vg_pop_clip`, `vg_reset_clip`) for nested viewports and inputs.
-  - **Scanline Winding-Rule Polygon Fill** (`vg_fill`) with sub-pixel edge smoothing for filled graphs and geometry.
+  - **Scanline Winding-Rule Polygon Fill** (`vg_fill`) with sub-pixel edge smoothing.
   - **Single-Pass Unified SDF Path Stroke** (`vg_stroke`) with clamped line projection distance fields.
   - **Bilinear 4-Corner Gradients** (`vg_fill_gradient`) with analytical SDF rounded box clipping.
   - **Multi-Column Grid Engine** (`ui_columns`, `ui_next_column`, `ui_end_columns`) for responsive layouts.
   - **Scrollable Viewports** (`ui_begin_scroll`, `ui_end_scroll`) with vertical wheel scrolling and draggable vector scrollbars.
   - **Per-Widget Lerp Animation Table** (`ui_anim_step`) providing smooth 60 FPS state transitions.
-  - **Deferred Z-Order Overlay Pass**:
-    - Dropdown popup menus (`ui_dropdown`)
-    - Right-click context menus (`ui.ctx_open`)
-    - Modal confirmation dialogs (`ui.modal_open`) with background dimming and input capture
-    - Animated toast notification alerts (`ui_toast`)
-    - Floating hover tooltips (`ui.tooltip_text`)
+  - **Deferred Z-Order Overlay Pass**: Dropdown popup menus, right-click context menus, modal confirmation dialogs, animated toast notifications, floating hover tooltips.
 - **Suite of 5 Interactive Workspaces**:
-  - **Controls Suite**: Single-line text input box (`ui_textbox` with blinking vector caret, typing, backspace, enter, esc), dropdown combo box, animated toggle switches, vector checkboxes, radio buttons, continuous sliders, rotary vector knobs (drag and scroll-wheel), and action buttons.
-  - **Node Studio**: Interactive draggable node graph editor with 4 nodes, cubic Bézier patch cables, signal ports, and subtle background dot grid.
-  - **Data & Charts**: Real-time filled vector area waveform (`vg_fill` + `vg_stroke`), telemetry, and selectable process data table with status badges.
-  - **Color Picker**: Interactive 2D HSV Saturation/Value gradient box, continuous Hue slider, live Hex readout (`#RRGGBB`), and Daylight High-Contrast Light Mode / Dark Mode palette switcher.
-  - **Scaling & Modals**: Resolution-independent live UI vector scaling (`0.75x` – `1.30x`), modal confirmation dialog, toast notification spawner, and multi-scale typography specimen.
-- **Headless & Regression Testing**:
-  - 13-stage automated regression test suite (`--test`).
-  - 32-bit uncompressed BMP exporter (`--snapshot <file.bmp>`, 2,508,854 bytes exact).
-  - Headless simulation mode (`--headless`).
+  - **Controls Suite**: Single-line text input box, dropdown combo box, animated toggle switches, vector checkboxes, radio buttons, continuous sliders, rotary vector knobs, action buttons.
+  - **Node Studio**: Interactive draggable node graph editor with 4 nodes, cubic Bézier patch cables, signal ports.
+  - **Data & Charts**: Real-time filled vector area waveform, telemetry, selectable process data table with status badges.
+  - **Color Picker**: Interactive 2D HSV Saturation/Value gradient box, continuous Hue slider, live Hex readout, Light/Dark mode switcher.
+  - **Scaling & Modals**: Resolution-independent live UI vector scaling (0.75x – 1.30x), modal confirmation dialog, toast notification spawner.
+- **Headless & Regression Testing**: 13-stage automated regression test suite (`--test`), 32-bit BMP exporter (`--snapshot`), headless simulation mode (`--headless`).
 
 ## [1.0.0] - 2026-11-01 (branch: `vector-gui`)
 
 ### Added
-- **Monolithic Canonical Pure C99 2D Vector Graphics & Immediate-Mode GUI Engine** (`src/gui.c`):
-  - Resolution-independent SDF and Quadratic/Cubic Bézier vector rasterizer operating on an 860x540 32-bit ARGB framebuffer without heap allocation (`malloc`-free).
-  - Fast compiler- and libm-agnostic float math (`vg_sqrtf`, `vg_sinf`, `vg_cosf`) requiring zero `<math.h>` or `-lm` dependencies.
-  - Proportional SVG-style quadratic Bézier typography (`vg_glyph_path`, `vg_text`, `vg_number`) with sub-pixel anti-aliasing, uppercase, lowercase with true ascenders and descenders, numbers, and punctuation.
-  - Unified multi-segment vector path rasterizer (`vg_begin_path`, `vg_move_to`, `vg_line_to`, `vg_quad_to`, `vg_cubic_to`, `vg_arc`, `vg_stroke`) with clamped line projection distance fields.
-  - Analytical Euclidean Signed Distance Fields (SDF) for rounded rects (`sdf_rrect`) and multi-pass soft drop shadows (`ui_card`).
-  - Resolution-independent dynamic UI Vector DPI Scaling (`0.75x` – `1.30x`) scaling all glyphs, Bézier curves, widgets, and radial gauges in real time.
-- **Immediate-Mode Vector Widgets**:
-  - `ui_card`: Analytical SDF rounded card with drop shadow and border compositing.
-  - `ui_nav_item`: Sidebar navigation item with procedural vector icons (sliders, paths, gauge).
-  - `ui_slider`: Draggable progress/value track with thumb and percentage readout.
-  - `ui_toggle`: Animated pill toggle switch.
-  - `ui_button`: Responsive push button with click detection.
-  - `ui_radial_gauge`: Dynamic circular arc meter.
-- **Application Workspaces & Controls**:
-  - **Dashboard**: Live UI Vector Scale (DPI) slider, Subpixel Anti-Aliasing toggle, Radial Bézier Arcs toggle, Stroke Geometry Quality slider, interactive Radial Telemetry & Bézier Gauge, Benchmark action, and BMP snapshot trigger.
-  - **Vector Paths**: Interactive SVG Bézier curve visualizer showing quadratic & cubic curve control points, and live path curvature controls.
-  - **Telemetry**: Real-time rendering telemetry, dynamic arc gauge, and execution pulse trigger.
-  - **Accent Themes**: Interactive swatches switching palette dynamically (Catppuccin Blue, Green, Purple, Peach).
-- **Native OS Windowing Backends**:
-  - **Windows**: Win32 GDI (`StretchDIBits` top-down DIB) with mouse tracking, `SetCapture`, and message pump.
-  - **Linux / BSD**: Native X11 (`XPutImage`) with event handling.
-  - **macOS**: Native Cocoa / CoreGraphics via C Objective-C runtime (`objc_msgSend`).
-  - **Headless / CI**: Built-in 32-bit uncompressed BMP exporter (`--snapshot <file.bmp>`, 1,857,654 bytes) and automated regression test suite (`--test`).
-- **Universal Multi-Compiler Support**:
-  - Warning-free compilation under MSVC (`/W4 /WX`), GCC (`-Wall -Wextra -Wpedantic -Werror`), and Clang.
-  - Verified across Visual Studio 2026 Community (x64, x86), Visual Studio 2019 BuildTools (x64, x86), MSYS2 UCRT64 GCC, Cygwin GCC & Clang, and WSL Ubuntu GCC.
+- **Monolithic Canonical Pure C99 2D Vector Graphics & Immediate-Mode GUI Engine** (`src/vector/gui.c`):
+  - Resolution-independent SDF and Quadratic/Cubic Bézier vector rasterizer (860x540 32-bit ARGB).
+  - Fast compiler- and libm-agnostic float math (`vg_sqrtf`, `vg_sinf`, `vg_cosf`).
+  - Proportional SVG-style quadratic Bézier typography with sub-pixel anti-aliasing.
+  - Unified multi-segment vector path rasterizer with clamped line projection distance fields.
+  - Analytical Euclidean Signed Distance Fields (SDF) for rounded rects and soft drop shadows.
+  - Resolution-independent dynamic UI Vector DPI Scaling (0.75x – 1.30x).
+- **Immediate-Mode Vector Widgets**: `ui_card`, `ui_nav_item`, `ui_slider`, `ui_toggle`, `ui_button`, `ui_radial_gauge`.
+- **Application Workspaces**: Dashboard, Vector Paths, Telemetry, Accent Themes.
+- **Native OS Windowing Backends**: Win32 GDI, X11, Cocoa/CoreGraphics, Headless.
+
+### Added (branch: `gui`)
+- **Monolithic Pure C99 Pixel Desktop GUI Engine** (`src/pixel/gui.c`):
+  - 32-bit ARGB software rasterizer (760x480 pixels).
+  - Sub-pixel anti-aliased rounded rectangles using squared-distance fields.
+  - Fixed-point 8.8 alpha blending with translucent soft drop shadows.
+  - Bit-packed 4x5 vector-scaled ASCII glyph font.
+- **Immediate-Mode Widget Library**: `gui_begin_panel`, `gui_nav_item`, `gui_toggle`, `gui_slider`, `gui_button`.
+- **Application Workspaces**: Dashboard, Renderer, Telemetry, Accent Themes.
+
+## [0.1.0] - 2026-11-01 (branch: `tui`)
 
 ### Added
-- **Monolithic Pure C99 Pixel Desktop GUI Engine** (`src/gui.c`):
-  - 32-bit ARGB software rasterizer operating on a 760x480 pixel framebuffer without dynamic memory allocations (`malloc`-free).
-  - Sub-pixel anti-aliased rounded rectangles using squared-distance fields (`draw_rrect`) without floating-point `sqrt` or `<math.h>` dependency.
-  - Fixed-point 8.8 alpha blending (`blend_argb`) with translucent soft drop shadows (`draw_card`).
-  - Bit-packed 4x5 vector-scaled ASCII glyph font (`glyph_bits`, `draw_text`, `draw_int`).
-- **Immediate-Mode Widget Library**:
-  - `gui_begin_panel`: Bordered surface with header, title, and separator.
-  - `gui_nav_item`: Sidebar navigation button with active, hover, and selection highlights.
-  - `gui_toggle`: Animated pill switch with state transitions.
-  - `gui_slider`: Draggable progress/value track with thumb and percentage readout.
-  - `gui_button`: Push button with hover and active click feedback.
-- **Application Workspaces & Controls**:
-  - **Dashboard**: Hardware V-Sync Lock, Subpixel Anti-Aliasing, Master Output Gain, Modulation Frequency, and animated real-time signal waveform visualizer using fast parabolic sine approximation.
-  - **Renderer**: Backlight Luminance slider, 10-bit HDR Compositing toggle, and Reset Defaults action.
-  - **Telemetry**: Simulated compute load slider, Trigger Pulse action, and real-time execution count.
-  - **Accent Themes**: Interactive swatches switching palette dynamically (Catppuccin Blue, Green, Purple, Yellow).
-- **Native OS Windowing Backends**:
-  - **Windows**: Win32 GDI (`StretchDIBits` top-down DIB) with mouse tracking, `SetCapture`, and message pump.
-  - **Linux / BSD**: Native X11 (`XPutImage`) with event handling.
-  - **macOS**: Native Cocoa / CoreGraphics via C Objective-C runtime (`objc_msgSend`).
-  - **Headless / CI**: Built-in 32-bit uncompressed BMP exporter (`--snapshot <file.bmp>`) and automated headless test suite (`--test`).
-- **Universal Multi-Compiler Support**:
-  - Warning-free compilation under MSVC (`/W4 /WX`), GCC (`-Wall -Wextra -Wpedantic -Werror`), and Clang.
-  - Verified across Visual Studio 2026 Community (x64, x86), Visual Studio 2019 BuildTools (x64, x86), MSYS2 UCRT64 GCC, Cygwin GCC & Clang, and WSL Ubuntu GCC.
+- **c99gui TUI**: Single-file, zero-allocation, immediate-mode terminal GUI in C99.
+- UTF-8 cell framebuffer with 24-bit foreground/background color.
+- VT100/ANSI key decoding, alt screen mode, hidden cursor.
+- Four-tab application: Overview, Display, Telemetry, About.
+- Smoke test suite (`tests/smoke.sh`) with keyboard scripting via `--snapshot`.

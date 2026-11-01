@@ -1,0 +1,155 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (upload artifacts without creating release)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            cc: gcc
+            archive: tar.gz
+          - os: macos-latest
+            target: macos-arm64
+            cc: clang
+            archive: tar.gz
+          - os: windows-latest
+            target: windows-x64
+            cc: msvc
+            archive: zip
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        if: matrix.cc == 'msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install X11 (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
+      - name: Build all four programs (Linux/macOS)
+        if: matrix.cc != 'msvc'
+        run: |
+          mkdir -p build
+          
+          # TUI
+          ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/tui/c99gui.c -o build/c99gui-tui
+          
+          # Pixel GUI (Cocoa on macOS, X11 on Linux)
+          if [ "${{ runner.os }}" = macOS ]; then
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/pixel/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-pixel
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/vector/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-vector
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/suite/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-suite
+          else
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/pixel/gui.c -lX11 -o build/c99gui-pixel
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/vector/gui.c -lX11 -o build/c99gui-vector
+            ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/suite/gui.c -lX11 -o build/c99gui-suite
+          fi
+          
+          # Copy LICENSE
+          cp LICENSE build/
+
+      - name: Build all four programs (Windows MSVC)
+        if: matrix.cc == 'msvc'
+        shell: cmd
+        run: |
+          mkdir build
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\tui\c99gui.c /Febuild\c99gui-tui.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\pixel\gui.c /Febuild\c99gui-pixel.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\vector\gui.c /Febuild\c99gui-vector.exe
+          cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\suite\gui.c /Febuild\c99gui-suite.exe
+          copy LICENSE build\
+
+      - name: Create archive
+        shell: bash
+        run: |
+          cd build
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a ../c99gui-${{ github.ref_name }}-${{ matrix.target }}.zip *.exe LICENSE
+          else
+            tar czvf ../c99gui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz *
+          fi
+          cd ..
+          
+          # Generate SHA256 checksums
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            sha256sum c99gui-${{ github.ref_name }}-${{ matrix.target }}.zip > SHA256SUMS.txt
+          else
+            sha256sum c99gui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > SHA256SUMS.txt
+          fi
+
+      - name: Upload artifacts (dry run)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: c99gui-${{ github.ref_name }}-${{ matrix.target }}
+          path: |
+            c99gui-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+            SHA256SUMS.txt
+          retention-days: 7
+
+      - name: Upload release assets
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            c99gui-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
+            SHA256SUMS.txt
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+
+  # Aggregate checksums and create release notes
+  release-notes:
+    runs-on: ubuntu-latest
+    outputs:
+      notes_exist: ${{ steps.check.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check if release notes section exists in CHANGELOG
+        id: check
+        run: |
+          TAG="${{ github.ref_name }}"
+          if grep -q "^## \[$TAG\]" CHANGELOG.md 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Extract release notes from CHANGELOG
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          TAG="${{ github.ref_name }}"
+          # Extract section between ## [$TAG] and next ## [
+          awk -v tag="## \\[$TAG\\]" '
+            $0 ~ tag { found=1; next }
+            found && /^## \[/ { found=0 }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+      - name: Create default release notes
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          echo "## Release ${{ github.ref_name }}" > RELEASE_NOTES.md
+          echo "" >> RELEASE_NOTES.md
+          echo "Automated release build with all four c99gui programs:" >> RELEASE_NOTES.md
+          echo "- c99gui-tui: Terminal UI (zero dependencies)" >> RELEASE_NOTES.md
+          echo "- c99gui-pixel: Pixel desktop GUI" >> RELEASE_NOTES.md
+          echo "- c99gui-vector: Vector desktop GUI" >> RELEASE_NOTES.md
+          echo "- c99gui-suite: Comprehensive vector GUI suite" >> RELEASE_NOTES.md
