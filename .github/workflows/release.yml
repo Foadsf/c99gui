@@ -196,7 +196,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true'
+        if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
