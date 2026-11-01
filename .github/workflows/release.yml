@@ -223,7 +223,7 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: c99gui-${{ needs.detect-mode.outputs.version }}-*
+          pattern: c99gui-*
           merge-multiple: true
           path: ./release-artifacts
 
