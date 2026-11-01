@@ -17,7 +17,7 @@ jobs:
         mode: [default, headless]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install X11
         if: matrix.mode == 'default'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev
@@ -26,19 +26,20 @@ jobs:
           mkdir -p build
           flags="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow"
           [ "${{ matrix.mode }}" = headless ] && flags="$flags -DC99GUI_HEADLESS"
-          [ "${{ matrix.mode }}" = default ] && flags="$flags -lX11"
           
           # TUI - no graphics libraries
           ${{ matrix.cc }} -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/tui/c99gui.c -o build/c99gui-tui
           
-          # Pixel GUI
-          ${{ matrix.cc }} $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
-          
-          # Vector GUI
-          ${{ matrix.cc }} $flags -Werror src/vector/gui.c -o build/c99gui-vector
-          
-          # Suite GUI
-          ${{ matrix.cc }} $flags -Werror src/suite/gui.c -o build/c99gui-suite
+          # Pixel GUI - libraries AFTER source for --as-needed
+          if [ "${{ matrix.mode }}" = default ]; then
+            ${{ matrix.cc }} $flags -Werror src/pixel/gui.c -lX11 -o build/c99gui-pixel
+            ${{ matrix.cc }} $flags -Werror src/vector/gui.c -lX11 -o build/c99gui-vector
+            ${{ matrix.cc }} $flags -Werror src/suite/gui.c -lX11 -o build/c99gui-suite
+          else
+            ${{ matrix.cc }} $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
+            ${{ matrix.cc }} $flags -Werror src/vector/gui.c -o build/c99gui-vector
+            ${{ matrix.cc }} $flags -Werror src/suite/gui.c -o build/c99gui-suite
+          fi
       - name: Test all programs
         run: |
           chmod +x tests/smoke.sh tests/tui_smoke.sh
@@ -55,25 +56,26 @@ jobs:
         mode: [default, headless]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build all four programs
         run: |
           mkdir -p build
           flags="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow"
           [ "${{ matrix.mode }}" = headless ] && flags="$flags -DC99GUI_HEADLESS"
-          [ "${{ matrix.mode }}" = default ] && flags="$flags -framework Cocoa -framework CoreGraphics"
           
           # TUI - no graphics libraries
           clang -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror src/tui/c99gui.c -o build/c99gui-tui
           
-          # Pixel GUI
-          clang $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
-          
-          # Vector GUI
-          clang $flags -Werror src/vector/gui.c -o build/c99gui-vector
-          
-          # Suite GUI
-          clang $flags -Werror src/suite/gui.c -o build/c99gui-suite
+          # Pixel GUI - frameworks AFTER source
+          if [ "${{ matrix.mode }}" = default ]; then
+            clang $flags -Werror src/pixel/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-pixel
+            clang $flags -Werror src/vector/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-vector
+            clang $flags -Werror src/suite/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-suite
+          else
+            clang $flags -Werror src/pixel/gui.c -o build/c99gui-pixel
+            clang $flags -Werror src/vector/gui.c -o build/c99gui-vector
+            clang $flags -Werror src/suite/gui.c -o build/c99gui-suite
+          fi
       - name: Test all programs
         run: |
           chmod +x tests/smoke.sh tests/tui_smoke.sh
@@ -90,12 +92,25 @@ jobs:
         mode: [default, headless]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@v7
+      - name: Setup MSVC
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) {
+            $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($installPath) {
+              $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+              if (Test-Path $vcvars) {
+                echo "VCVARS=$vcvars" >> $env:GITHUB_ENV
+                echo "VSINSTALLDIR=$installPath" >> $env:GITHUB_ENV
+              }
+            }
+          }
       - name: Build all four programs
         shell: cmd
         run: |
-          mkdir build
+          call "%VCVARS%" amd64
           set DEFS=
           if "${{ matrix.mode }}"=="headless" set DEFS=/DC99GUI_HEADLESS
           
@@ -119,7 +134,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -131,7 +146,7 @@ jobs:
           # TUI - no graphics libraries
           gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/tui/c99gui.c -o build/c99gui-tui.exe
           
-          # GUIs - GDI32
+          # GUIs - GDI32 libraries AFTER source
           gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/pixel/gui.c -lgdi32 -luser32 -o build/c99gui-pixel.exe
           gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/vector/gui.c -lgdi32 -luser32 -o build/c99gui-vector.exe
           gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror src/suite/gui.c -lgdi32 -luser32 -o build/c99gui-suite.exe
