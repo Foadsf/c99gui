@@ -227,16 +227,23 @@ jobs:
           merge-multiple: true
           path: ./release-artifacts
 
+      - name: List downloaded artifacts
+        shell: bash
+        run: |
+          echo "Downloaded artifacts:"
+          ls -la ./release-artifacts/ || echo "Directory not found"
+          pwd
+
       - name: Extract release notes
         id: extract-notes
         shell: bash
         run: |
           TAG="${{ needs.detect-mode.outputs.version }}"
           # Search for ## [TAG] or ## [vTAG] in CHANGELOG
-          if grep -qE "^## \[v?${TAG}\]" CHANGELOG.md 2>/dev/null; then
-            awk -v tag="## \\[v?${TAG}\\]" '
+          if grep -qE "^## \\[v?${TAG}\\]" CHANGELOG.md 2>/dev/null; then
+            awk -v tag="## \\[${TAG}\\]" '
               $0 ~ tag { found=1; next }
-              found && /^## \[/ { found=0 }
+              found && /^## \\/ { found=0 }
               found { print }
             ' CHANGELOG.md > RELEASE_NOTES.md
             echo "notes_found=true" >> $GITHUB_OUTPUT
@@ -250,12 +257,14 @@ jobs:
       - name: Create combined SHA256SUMS
         shell: bash
         run: |
+          ls -la ./release-artifacts/
           cd ./release-artifacts
           # Find all archives and create combined checksums
           > ../COMBINED_SHA256SUMS.txt
           for archive in *.tar.gz *.zip; do
-            [ -f "$archive" ] || continue
-            sha256sum "$archive" >> ../COMBINED_SHA256SUMS.txt
+            if [ -f "$archive" ]; then
+              sha256sum "$archive" >> ../COMBINED_SHA256SUMS.txt
+            fi
           done
           cd ..
           # Verify all checksums
