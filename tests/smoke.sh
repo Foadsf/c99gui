@@ -30,15 +30,15 @@ check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"
 # Validate BMP: read width and height from header (bytes 18-21 and 22-25, little-endian)
 # Expected size = 54 (header) + width * height * 4 (32-bit ARGB)
 if [ -f "$TMP_BMP" ]; then
-    # Read width (4 bytes LE at offset 18) and height (4 bytes LE at offset 22)
-    # Using od to extract bytes and awk to compute
-    WIDTH=$(od -An -tu4 -j18 -N4 "$TMP_BMP" | tr -d ' ')
-    HEIGHT=$(od -An -tu4 -j22 -N4 "$TMP_BMP" | tr -d ' ')
+    # Read width and height as little-endian 32-bit integers
+    # Using od with proper byte extraction
+    WIDTH=$(od -An -tu1 -j18 -N4 "$TMP_BMP" | awk '{print $1 + $2*256 + $3*65536 + $4*16777216}')
+    HEIGHT=$(od -An -tu1 -j22 -N4 "$TMP_BMP" | awk '{print $1 + $2*256 + $3*65536 + $4*16777216}')
     
-    # Handle signed height (negative means top-down)
+    # Handle signed height (negative means top-down) - take absolute value
     HEIGHT=${HEIGHT#-}
     
-    if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ]; then
+    if [ -n "$WIDTH" ] && [ -n "$HEIGHT" ] && [ "$WIDTH" -gt 0 ] && [ "$HEIGHT" -gt 0 ]; then
         EXPECTED_SIZE=$((54 + WIDTH * HEIGHT * 4))
         ACTUAL_SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
         
@@ -51,7 +51,7 @@ if [ -f "$TMP_BMP" ]; then
         fi
     else
         fail=$((fail + 1))
-        printf 'FAIL could not read BMP dimensions\n'
+        printf 'FAIL could not read valid BMP dimensions (got %dx%d)\n' "${WIDTH:-0}" "${HEIGHT:-0}"
     fi
     rm -f "$TMP_BMP"
 else
