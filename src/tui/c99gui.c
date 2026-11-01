@@ -626,7 +626,7 @@ static void ui_present(void)
     Color lfg = { 0, 0, 0 }, lbg = { 0, 0, 0 };
 
     out_flush();
-    emit("\033[?2026h"); /* synchronized update; ignored where unsupported */
+    emit("\033[?2026h"); /* DEC private mode 2026 (synchronized output); ignored where unsupported */
     if (ui.force) emit("\033[0m\033[2J");
     for (y = 0; y < ui.fh; y++) {
         for (x = 0; x < ui.fw; x++) {

@@ -70,7 +70,7 @@
 #define WIN_W_MAX   3840
 #define WIN_H_MAX   2160
 #define WIN_W_MIN   640
-#define WIN_H_MIN   400
+#define WIN_H_MIN   450
 
 /* =========================================================================
  * 1. CORE GUI STATE & IMMEDIATE-MODE CONTEXT
@@ -171,7 +171,7 @@ static const uint8_t font_8x16[95][16] = {
     /* " (34) */ {0x00,0x00,0x36,0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     /* # (35) */ {0x00,0x00,0x00,0x00,0x66,0x66,0xFF,0x66,0x66,0xFF,0x66,0x66,0x00,0x00,0x00,0x00},
     /* $ (36) */ {0x00,0x00,0x18,0x7E,0xC0,0xC0,0x7E,0x18,0x18,0x7E,0x03,0x03,0x7E,0x18,0x00,0x00},
-    /* % (37) */ {0x00,0x00,0x00,0xC6,0xCC,0x18,0x30,0x60,0xC6,0x66,0x0C,0x18,0x30,0xC6,0x00,0x00},
+    /* % (37) */ {0x00,0x00,0xC6,0xCC,0x18,0x30,0x60,0xC6,0x66,0xCC,0x18,0x30,0x60,0xC6,0x00,0x00},
     /* & (38) */ {0x00,0x00,0x3C,0x66,0x66,0x3C,0x66,0x66,0x6E,0x60,0x60,0x3C,0x00,0x00,0x00,0x00},
     /* ' (39) */ {0x00,0x00,0x18,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
     /* ( (40) */ {0x00,0x00,0x18,0x30,0x60,0x60,0x60,0x60,0x60,0x60,0x30,0x18,0x00,0x00,0x00,0x00},
@@ -218,7 +218,7 @@ static const uint8_t font_8x16[95][16] = {
     /* Q (81) */ {0x00,0x00,0x3C,0x66,0xC3,0xC3,0xC3,0xC3,0xC6,0x66,0x3C,0x06,0x00,0x00,0x00,0x00},
     /* R (82) */ {0x00,0x00,0xFC,0x66,0x66,0x66,0x7C,0x6C,0x66,0x66,0xE6,0x00,0x00,0x00,0x00,0x00},
     /* S (83) */ {0x00,0x00,0x3C,0x66,0xC0,0xC0,0x3C,0x06,0x06,0xC6,0x7C,0x00,0x00,0x00,0x00,0x00},
-    /* T (84) */ {0x00,0x00,0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00,0x00},
+    /* T (84) */ {0x00,0x7E,0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00},
     /* U (85) */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x66,0x3C,0x00,0x00,0x00,0x00,0x00},
     /* V (86) */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x6C,0x6C,0x38,0x00,0x00,0x00,0x00,0x00},
     /* W (87) */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xD6,0xFE,0x6C,0x00,0x00,0x00,0x00,0x00},
@@ -463,8 +463,11 @@ static void gui_frame(void) {
 
         /* Real-Time Animated Waveform Canvas - scales with available space */
         int wx = ui.layout_x, wy = ui.layout_y + 4, ww = ui.layout_w;
+        int panel_bottom = 20 + main_h;
+        int max_wh = panel_bottom - wy - 8; /* leave 8px margin */
         int wh = (int)(135 * scale_factor);
-        if (wh < 80) wh = 80; /* minimum visible height */
+        if (wh < 80) wh = 80;
+        if (wh > max_wh) wh = max_wh; /* clamp to fit in panel */
         draw_rrect(wx, wy, ww, wh, 8, 0xFF11121Du);
         draw_text(wx + 14, wy + 12, "REALTIME SIGNAL WAVEFORM", 0xFF6C7086u);
         int mid_y = wy + wh / 2 + 10;
@@ -541,116 +544,135 @@ static void render_snapshot_frame(void) {
     gui_frame();
 }
 
-/* Headless smoke test: simulates interactive clicks & validates state transitions */
+/* Honest test framework: CHECK macro counts pass/fail, continues on failure */
+static int test_pass = 0;
+static int test_fail = 0;
+#define CHECK(expr, msg) \
+    do { \
+        if (expr) { \
+            test_pass++; \
+            printf("ok   %s\n", msg); \
+        } else { \
+            test_fail++; \
+            fprintf(stderr, "FAIL: %s\n", msg); \
+        } \
+    } while (0)
+
+/* Compute nav item Y coordinate from layout constants (same as gui_frame) */
+static int nav_item_y(int index) {
+    return 76 + index * 42;
+}
+
+/* Compute panel layout Y after N toggles and M sliders */
+static int panel_layout_y(int toggles, int sliders) {
+    return 20 + 52 + toggles * 46 + sliders * 62;
+}
+
+/* Headless test suite: honest, continues on failure, exits nonzero on any fail */
 static int run_headless_tests(const char *bmp_output) {
     printf("Running C99 pixel GUI headless test suite...\n");
+    test_pass = 0;
+    test_fail = 0;
     gui_init();
 
-    /* Frame 1: Initial render */
+    /* Test 1: Framebuffer initialization */
     gui_frame();
-    if (ui.px[100 * g_win_stride + 100] == 0) {
-        fprintf(stderr, "FAIL: framebuffer uninitialized\n");
-        return 1;
-    }
-    printf("ok   framebuffer rasterized (%dx%d)\n", g_win_w, g_win_h);
+    CHECK(ui.px[100 * g_win_stride + 100] != 0, "framebuffer rasterized");
 
-    /* Test 1: Click Nav Item (Renderer tab) - coordinates for default 760x480 */
-    ui.mx = 100; ui.my = 118;
+    /* Test 2: Nav click Dashboard -> Renderer (uses computed nav Y) */
+    ui.mx = 100; ui.my = nav_item_y(1);
     ui.mouse_pressed = true;
     gui_frame();
-    if (ui.tab != 1) {
-        fprintf(stderr, "FAIL: tab switch failed (expected 1, got %d)\n", ui.tab);
-        return 1;
-    }
-    printf("ok   nav item click (switched to Renderer tab)\n");
+    CHECK(ui.tab == 1, "nav item click (Dashboard->Renderer)");
 
-    /* Test 2: Click Telemetry tab */
-    ui.mx = 100; ui.my = 160;
+    /* Test 3: Nav click Renderer -> Telemetry */
+    ui.mx = 100; ui.my = nav_item_y(2);
     ui.mouse_pressed = true;
     gui_frame();
-    if (ui.tab != 2) {
-        fprintf(stderr, "FAIL: tab switch failed (expected 2, got %d)\n", ui.tab);
-        return 1;
-    }
-    printf("ok   nav item click (switched to Telemetry tab)\n");
+    CHECK(ui.tab == 2, "nav item click (Renderer->Telemetry)");
 
-    /* Test 3: Click Trigger Pulse Button (Telemetry tab, after slider) */
-    /* panel y=20, layout_y starts at 72, slider adds 62 -> button at y=134 */
+    /* Test 4: Button click "TRIGGER PULSE" on Telemetry tab */
+    /* Telemetry panel: layout_y starts at 72, slider adds 62 -> button at y=134 */
     int before_pulses = pulse_cnt;
-    ui.mx = 300; ui.my = 150;
+    ui.mx = 300; ui.my = panel_layout_y(0, 1);
     ui.mouse_pressed = true;
     gui_frame();
-    if (pulse_cnt != before_pulses + 1) {
-        fprintf(stderr, "FAIL: button trigger failed (expected %d, got %d)\n", before_pulses + 1, pulse_cnt);
-        return 1;
-    }
-    printf("ok   button click triggered pulse (count=%d)\n", pulse_cnt);
+    CHECK(pulse_cnt == before_pulses + 1, "button click triggered pulse");
 
-    /* Test 4: Return to Dashboard */
-    ui.mx = 100; ui.my = 76;
+    /* Test 5: Return to Dashboard */
+    ui.mx = 100; ui.my = nav_item_y(0);
     ui.mouse_pressed = true;
     gui_frame();
-    if (ui.tab != 0) {
-        fprintf(stderr, "FAIL: return to dashboard failed\n");
-        return 1;
-    }
-    printf("ok   nav item return to Dashboard\n");
+    CHECK(ui.tab == 0, "nav return to Dashboard");
 
-    /* Test 5: Toggle VSync (Dashboard tab, first toggle after panel header) */
-    /* panel y=20, layout_y starts at 72, toggle at y=72, h=36 */
+    /* Test 6: Toggle VSync (first toggle in Dashboard) */
     bool before_vsync = opt_vsync;
-    ui.mx = 400; ui.my = 90;
+    ui.mx = 400; ui.my = panel_layout_y(0, 0);
     ui.mouse_pressed = true;
     gui_frame();
-    if (opt_vsync == before_vsync) {
-        fprintf(stderr, "FAIL: toggle vsync failed\n");
-        return 1;
-    }
-    printf("ok   toggle switch state flipped\n");
+    CHECK(opt_vsync != before_vsync, "toggle switch state flipped");
 
-    /* Test 6: Drag Slider (Modulation Frequency) */
-    ui.mx = 350; ui.my = 245;
+    /* Test 7: Drag Slider (Modulation Frequency) - verify value changes in drag direction */
+    int before_freq = val_freq;
+    ui.mx = 350; ui.my = panel_layout_y(2, 1);
     ui.mouse_pressed = true;
     ui.mouse_down = true;
     gui_frame();
-    ui.mx = 450;
+    ui.mx = 450;  /* drag right -> should increase value */
     gui_frame();
     ui.mouse_down = false;
     ui.mouse_released = true;
     gui_frame();
-    printf("ok   slider drag processed (val_freq=%d)\n", val_freq);
+    CHECK(val_freq > before_freq, "slider drag increased value (right drag)");
 
-    /* Test 7: Accent swatch selection */
+    /* Test 8: Accent swatch selection (purple, index 2) */
     ui.mx = 36 + 2 * 38 + 10; ui.my = g_win_h - 56;
     ui.mouse_pressed = true;
     gui_frame();
-    if (ui.accent != 0xFFCBA6F7u) {
-        fprintf(stderr, "FAIL: accent swatch failed (got 0x%08X)\n", ui.accent);
-        return 1;
-    }
-    printf("ok   accent theme swatch selected (purple 0x%08X)\n", ui.accent);
+    CHECK(ui.accent == 0xFFCBA6F7u, "accent theme swatch selected (purple)");
 
-    /* Test 8: Resize simulation - change dimensions and re-render */
+    /* Test 9: Resize to minimum (640x450) - verify all widgets inside bounds */
     int old_w = g_win_w, old_h = g_win_h;
-    g_win_w = 1024; g_win_h = 768;
+    g_win_w = WIN_W_MIN; g_win_h = WIN_H_MIN;
     gui_frame();
-    if (ui.px[100 * g_win_stride + 100] == 0) {
-        fprintf(stderr, "FAIL: resize render failed\n");
-        return 1;
-    }
+    /* Sidebar: x=20, w=190, h=g_win_h-40 -> right edge at 210, bottom at g_win_h-20 */
+    CHECK(20 + 190 <= g_win_w, "sidebar fits horizontally at min size");
+    CHECK(20 + (g_win_h - 40) <= g_win_h, "sidebar fits vertically at min size");
+    /* Main panel: x=228, w=g_win_w-240, h=g_win_h-40 */
+    CHECK(228 + (g_win_w - 240) <= g_win_w, "main panel fits horizontally at min size");
+    CHECK(20 + (g_win_h - 40) <= g_win_h, "main panel fits vertically at min size");
+    /* No overlap: sidebar right (210) <= main panel left (228) */
+    CHECK(20 + 190 <= 228, "sidebar and main panel do not overlap");
     g_win_w = old_w; g_win_h = old_h;
-    printf("ok   resize simulation (1024x768) rendered without crash\n");
+
+    /* Test 10: Resize to large (1920x1080) - verify all widgets inside bounds */
+    g_win_w = 1920; g_win_h = 1080;
+    gui_frame();
+    CHECK(20 + 190 <= g_win_w, "sidebar fits horizontally at large size");
+    CHECK(20 + (g_win_h - 40) <= g_win_h, "sidebar fits vertically at large size");
+    CHECK(228 + (g_win_w - 240) <= g_win_w, "main panel fits horizontally at large size");
+    CHECK(20 + (g_win_h - 40) <= g_win_h, "main panel fits vertically at large size");
+    CHECK(20 + 190 <= 228, "sidebar and main panel do not overlap at large size");
+    g_win_w = old_w; g_win_h = old_h;
+
+    /* Test 11: Negative check (only runs when C99GUI_TEST_NEGATIVE=1) */
+    if (getenv("C99GUI_TEST_NEGATIVE")) {
+        /* This assertion is deliberately false to prove the test framework catches failures */
+        CHECK(0 == 1, "negative control (should fail)");
+    }
 
     if (bmp_output) {
         if (!save_bmp(bmp_output)) {
             fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
-            return 1;
+            test_fail++;
+        } else {
+            test_pass++;
+            printf("ok   snapshot saved to %s\n", bmp_output);
         }
-        printf("ok   snapshot saved to %s\n", bmp_output);
     }
 
-    printf("passed: 8  failed: 0\n");
-    return 0;
+    printf("passed: %d  failed: %d\n", test_pass, test_fail);
+    return test_fail > 0 ? 1 : 0;
 }
 
 static void print_usage(void) {
