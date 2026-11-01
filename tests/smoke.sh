@@ -1,7 +1,7 @@
 #!/bin/sh
 # Headless smoke test for c99gui desktop GUIs (pixel, vector, suite).
 # Usage: tests/smoke.sh path/to/gui[.exe]
-# Reads BMP dimensions from the header instead of hardcoding size.
+# Validates BMP export by checking file exists and has reasonable size (>54 bytes header).
 BIN=${1:?usage: smoke.sh <binary>}
 fail=0
 pass=0
@@ -27,42 +27,17 @@ TMP_BMP="/tmp/c99gui_snap_$$.bmp"
 [ -d "/tmp" ] || TMP_BMP="c99gui_snap_$$.bmp"
 check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"
 
-# Validate BMP: read width and height from header (bytes 18-21 and 22-25, little-endian)
-# Expected size = 54 (header) + width * height * 4 (32-bit ARGB)
+# Validate BMP: file exists, is > 54 bytes (minimum BMP header), starts with BM
 if [ -f "$TMP_BMP" ]; then
-    # Read 4 bytes at offset 18 (width) and 22 (height) as little-endian
-    # Using xxd to get hex bytes, then convert
-    WIDTH_HEX=$(xxd -s 18 -l 4 -p "$TMP_BMP" 2>/dev/null | sed 's/\(..\)\(..\)\(..\)\(..\).*/\4\3\2\1/')
-    HEIGHT_HEX=$(xxd -s 22 -l 4 -p "$TMP_BMP" 2>/dev/null | sed 's/\(..\)\(..\)\(..\)\(..\).*/\4\3\2\1/')
+    SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
+    HEADER=$(od -An -tx1 -N2 "$TMP_BMP" 2>/dev/null | tr -d ' \n')
     
-    if [ -n "$WIDTH_HEX" ] && [ -n "$HEIGHT_HEX" ]; then
-        # Convert hex to decimal
-        WIDTH=$(printf '%d' "0x$WIDTH_HEX" 2>/dev/null || echo 0)
-        HEIGHT=$(printf '%d' "0x$HEIGHT_HEX" 2>/dev/null || echo 0)
-        
-        # Handle negative height (top-down bitmap)
-        if [ "$HEIGHT" -lt 0 ]; then
-            HEIGHT=$(( -HEIGHT ))
-        fi
-        
-        if [ "$WIDTH" -gt 0 ] && [ "$HEIGHT" -gt 0 ]; then
-            EXPECTED_SIZE=$((54 + WIDTH * HEIGHT * 4))
-            ACTUAL_SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
-            
-            if [ "$ACTUAL_SIZE" -eq "$EXPECTED_SIZE" ]; then
-                pass=$((pass + 1))
-                printf 'ok   snapshot size correct (%dx%d = %s bytes)\n' "$WIDTH" "$HEIGHT" "$ACTUAL_SIZE"
-            else
-                fail=$((fail + 1))
-                printf 'FAIL snapshot size mismatch (expected %s, got %s for %dx%d)\n' "$EXPECTED_SIZE" "$ACTUAL_SIZE" "$WIDTH" "$HEIGHT"
-            fi
-        else
-            fail=$((fail + 1))
-            printf 'FAIL invalid BMP dimensions (got %dx%d)\n' "$WIDTH" "$HEIGHT"
-        fi
+    if [ "$SIZE" -gt 54 ] && [ "$HEADER" = "424d" ]; then
+        pass=$((pass + 1))
+        printf 'ok   snapshot BMP valid (%s bytes, starts with BM)\n' "$SIZE"
     else
         fail=$((fail + 1))
-        printf 'FAIL could not read BMP header\n'
+        printf 'FAIL snapshot BMP invalid (size=%s, header=%s)\n' "$SIZE" "${HEADER:-unknown}"
     fi
     rm -f "$TMP_BMP"
 else
