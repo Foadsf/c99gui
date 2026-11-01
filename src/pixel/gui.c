@@ -100,7 +100,7 @@ static GuiCtx ui;
 
 static void gui_init(void) {
     ui.px = g_framebuffer;
-    ui.tab = 0;
+    /* ui.tab preserved if already set */
     ui.accent = 0xFF89B4FAu;
 }
 
@@ -449,6 +449,11 @@ static void gui_frame(void) {
     int main_w = g_win_w - 240;
     int main_h = g_win_h - 40;
     int main_x = 228;
+    
+    /* Scale widget spacing based on available height to prevent overflow */
+    float scale_factor = 1.0f;
+    if (main_h < 350) scale_factor = (float)main_h / 350.0f;
+    
     if (ui.tab == 0) {
         gui_begin_panel(main_x, 20, main_w, main_h, "AUDIO AND PIPELINE CONTROLS");
         gui_toggle("HARDWARE V-SYNC LOCK", &opt_vsync);
@@ -456,12 +461,14 @@ static void gui_frame(void) {
         gui_slider("MASTER OUTPUT GAIN", &val_gain, 0, 100);
         gui_slider("MODULATION FREQUENCY", &val_freq, 10, 100);
 
-        /* Real-Time Animated Waveform Canvas */
-        int wx = ui.layout_x, wy = ui.layout_y + 4, ww = ui.layout_w, wh = 135;
+        /* Real-Time Animated Waveform Canvas - scales with available space */
+        int wx = ui.layout_x, wy = ui.layout_y + 4, ww = ui.layout_w;
+        int wh = (int)(135 * scale_factor);
+        if (wh < 80) wh = 80; /* minimum visible height */
         draw_rrect(wx, wy, ww, wh, 8, 0xFF11121Du);
         draw_text(wx + 14, wy + 12, "REALTIME SIGNAL WAVEFORM", 0xFF6C7086u);
         int mid_y = wy + wh / 2 + 10;
-        float amp = (float)val_gain * 0.42f;
+        float amp = (float)val_gain * 0.42f * scale_factor;
         float freq = (float)val_freq * 0.0025f;
         for (int i = 12; i < ww - 12; i++) {
             float phase = (float)i * freq + (float)ui.tick * 0.08f;
@@ -516,10 +523,22 @@ static bool save_bmp(const char *filename) {
 
     if (fwrite(header, 1, 54, f) != 54) { fclose(f); return false; }
     for (int y = 0; y < g_win_h; y++) {
-        if (fwrite(&ui.px[y * g_win_stride], 4, g_win_w, f) != (size_t)g_win_w) { fclose(f); return false; }
+        if (fwrite(&ui.px[y * g_win_stride], 4, (size_t)g_win_w, f) != (size_t)g_win_w) { fclose(f); return false; }
     }
     fclose(f);
     return true;
+}
+
+/* Render one clean frame for snapshot (no test suite, fresh framebuffer) */
+static void render_snapshot_frame(void) {
+    /* Clear framebuffer to background gradient */
+    for (int y = 0; y < g_win_h; y++) {
+        uint32_t b = 22u + (uint32_t)(y * 12 / g_win_h);
+        uint32_t row_col = 0xFF0E0F00u | b;
+        uint32_t *row = &ui.px[y * g_win_stride];
+        for (int x = 0; x < g_win_w; x++) row[x] = row_col;
+    }
+    gui_frame();
 }
 
 /* Headless smoke test: simulates interactive clicks & validates state transitions */
@@ -772,11 +791,11 @@ static int run_cocoa_window(void) {
     id app = msg0(id, objc_getClass("NSApplication"), "sharedApplication");
     msg1(BOOL, app, "setActivationPolicy:", long, 0);
 
-    /* styleMask: 3 = titled + closable, add 8 for resizable, 16 for minimizable */
+    /* NSWindowStyleMask: 1=Titled, 2=Closable, 4=Miniaturizable, 8=Resizable. 15=all four */
     NSRect frame = {{100.0, 100.0}, {(double)g_win_w, (double)g_win_h}};
     id win = msg4(id, msg0(id, objc_getClass("NSWindow"), "alloc"),
                   "initWithContentRect:styleMask:backing:defer:",
-                  NSRect, frame, unsigned long, 15u, unsigned long, 2u, BOOL, 0);  /* 15 = titled+closable+mini+resizable */
+                  NSRect, frame, unsigned long, 15u, unsigned long, 2u, BOOL, 0);
     id title = msg1(id, objc_getClass("NSString"), "stringWithUTF8String:", const char *, "Pure C99 Native Pixel GUI");
     msg1(void, win, "setTitle:", id, title);
     msg1(void, win, "makeKeyAndOrderFront:", id, NULL);
@@ -802,14 +821,15 @@ static int run_cocoa_window(void) {
             msg1(void, app, "sendEvent:", id, ev);
         }
         NSPoint mp = msg0(NSPoint, win, "mouseLocationOutsideOfEventStream");
-        NSSize sz = msg0(NSSize, win, "frameSize");
+        id content_view = msg0(id, win, "contentView");
+        NSSize sz = msg0(NSSize, content_view, "frame").size;
         g_win_w = (int)sz.width;
         g_win_h = (int)sz.height;
         ui.mx = (int)mp.x;
         ui.my = g_win_h - (int)mp.y;
 
         gui_frame();
-        CGContextRef ctx = CGBitmapContextCreate(ui.px, g_win_w, g_win_h, 8, g_win_w * 4, cs,
+        CGContextRef ctx = CGBitmapContextCreate(ui.px, g_win_w, g_win_h, 8, g_win_stride * 4, cs,
                            (uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaNoneSkipFirst);
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         msg1(void, layer, "setContents:", id, (id)img);
@@ -942,8 +962,17 @@ int main(int argc, char **argv) {
     gui_init();
     ui.tab = init_tab;
 
-    if (do_test || snapshot_file) {
-        return run_headless_tests(snapshot_file);
+    if (snapshot_file) {
+        render_snapshot_frame();
+        if (!save_bmp(snapshot_file)) {
+            fprintf(stderr, APP_NAME ": failed to save snapshot to %s\n", snapshot_file);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (do_test) {
+        return run_headless_tests(NULL);
     }
 
     if (headless) {
