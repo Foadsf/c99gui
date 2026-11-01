@@ -172,7 +172,7 @@ jobs:
       - name: Sanitize ref name for artifact naming
         shell: bash
         run: |
-          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          REF_SAFE=$(echo '${{ github.ref_name }}" | tr '/' '-''
           echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
 
       - name: Create archive with top-level directory
@@ -205,7 +205,7 @@ jobs:
       
       - name: Sanitize ref name
         run: |
-          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          REF_SAFE=$(echo '${{ github.ref_name }}" | tr '/' '-''
           echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
       
       - name: Download all artifacts
@@ -287,7 +287,7 @@ jobs:
         shell: bash
         run: |
           echo "=== PUBLISH-TEST SUMMARY ==="
-          echo "Version: ${{ needs.detect-mode.outputs.version }}"
+          echo 'Version: ${{ needs.detect-mode.outputs.version }}'
           echo "Release notes:"
           cat RELEASE_NOTES.md
           echo ""
@@ -297,10 +297,10 @@ jobs:
           cat COMBINED_SHA256SUMS.txt
           echo ""
           echo "Publish preparation successful. To create real release, push a tag:"
-          echo "  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}"
+          echo '  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}'
 
-      - name: Negative check: 9.9.9 should not have notes
-        if: needs.detect-mode.outputs.is_publish_test == 'true'
+      - name: "Negative check: 9.9.9 should not have notes"
+        if: "needs.detect-mode.outputs.is_publish_test == 'true'"
         shell: bash
         run: |
           echo "=== NEGATIVE CHECK: 9.9.9 (should fail) ==="
@@ -331,7 +331,7 @@ jobs:
         shell: bash
         run: |
           echo "=== DRY-RUN SUMMARY ==="
-          echo "Version: ${{ needs.detect-mode.outputs.version }}"
+          echo 'Version: ${{ needs.detect-mode.outputs.version }}'
           echo "Artifacts uploaded (no release created)"
           echo "To test publish preparation, use mode: publish-test"
           echo "To create real release, push a tag v*"
