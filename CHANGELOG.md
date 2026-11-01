@@ -5,6 +5,35 @@ All notable changes to `c99gui` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-01 (branch: `vector-suite`)
+
+### Added
+- **Comprehensive Pure C99 2D Vector Graphics & Immediate-Mode GUI Framework** (`src/gui.c`):
+  - Resolution expanded to 980x640 32-bit ARGB framebuffer ($2,508,800$ bytes) with zero heap allocations (`malloc`-free).
+  - Hardware-style **Scissor Clipping Stack** (`vg_push_clip`, `vg_pop_clip`, `vg_reset_clip`) for nested viewports and inputs.
+  - **Scanline Winding-Rule Polygon Fill** (`vg_fill`) with sub-pixel edge smoothing for filled graphs and geometry.
+  - **Single-Pass Unified SDF Path Stroke** (`vg_stroke`) with clamped line projection distance fields.
+  - **Bilinear 4-Corner Gradients** (`vg_fill_gradient`) with analytical SDF rounded box clipping.
+  - **Multi-Column Grid Engine** (`ui_columns`, `ui_next_column`, `ui_end_columns`) for responsive layouts.
+  - **Scrollable Viewports** (`ui_begin_scroll`, `ui_end_scroll`) with vertical wheel scrolling and draggable vector scrollbars.
+  - **Per-Widget Lerp Animation Table** (`ui_anim_step`) providing smooth 60 FPS state transitions.
+  - **Deferred Z-Order Overlay Pass**:
+    - Dropdown popup menus (`ui_dropdown`)
+    - Right-click context menus (`ui.ctx_open`)
+    - Modal confirmation dialogs (`ui.modal_open`) with background dimming and input capture
+    - Animated toast notification alerts (`ui_toast`)
+    - Floating hover tooltips (`ui.tooltip_text`)
+- **Suite of 5 Interactive Workspaces**:
+  - **Controls Suite**: Single-line text input box (`ui_textbox` with blinking vector caret, typing, backspace, enter, esc), dropdown combo box, animated toggle switches, vector checkboxes, radio buttons, continuous sliders, rotary vector knobs (drag and scroll-wheel), and action buttons.
+  - **Node Studio**: Interactive draggable node graph editor with 4 nodes, cubic Bézier patch cables, signal ports, and subtle background dot grid.
+  - **Data & Charts**: Real-time filled vector area waveform (`vg_fill` + `vg_stroke`), telemetry, and selectable process data table with status badges.
+  - **Color Picker**: Interactive 2D HSV Saturation/Value gradient box, continuous Hue slider, live Hex readout (`#RRGGBB`), and Daylight High-Contrast Light Mode / Dark Mode palette switcher.
+  - **Scaling & Modals**: Resolution-independent live UI vector scaling (`0.75x` – `1.30x`), modal confirmation dialog, toast notification spawner, and multi-scale typography specimen.
+- **Headless & Regression Testing**:
+  - 13-stage automated regression test suite (`--test`).
+  - 32-bit uncompressed BMP exporter (`--snapshot <file.bmp>`, 2,508,854 bytes exact).
+  - Headless simulation mode (`--headless`).
+
 ## [1.0.0] - 2026-11-01 (branch: `vector-gui`)
 
 ### Added

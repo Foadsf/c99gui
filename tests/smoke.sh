@@ -26,12 +26,12 @@ TMP_BMP="/tmp/c99gui_snap_$$.bmp"
 [ -d "/tmp" ] || TMP_BMP="c99gui_snap_$$.bmp"
 check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"
 
-# Validate BMP: 1857654 bytes (54 header + 860*540*4 bytes)
+# Validate BMP: 2508854 bytes (54 header + 980*640*4 bytes)
 if [ -f "$TMP_BMP" ]; then
     SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
-    if [ "$SIZE" -eq 1857654 ]; then
+    if [ "$SIZE" -eq 2508854 ]; then
         pass=$((pass + 1))
-        printf 'ok   snapshot size exact (1857654 bytes)\n'
+        printf 'ok   snapshot size exact (2508854 bytes)\n'
     else
         fail=$((fail + 1))
         printf 'FAIL snapshot size mismatch (got %s)\n' "$SIZE"
