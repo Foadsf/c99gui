@@ -93,27 +93,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Setup MSVC
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vswhere) {
-            $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if ($installPath) {
-              $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
-              if (Test-Path $vcvars) {
-                echo "VCVARS=$vcvars" >> $env:GITHUB_ENV
-                echo "VSINSTALLDIR=$installPath" >> $env:GITHUB_ENV
-              }
-            }
-          }
       - name: Build all four programs
         shell: cmd
         run: |
-          call "%VCVARS%" amd64
+          rem Find and call vcvarsall.bat to set up MSVC environment
+          set VSWHERE=C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe
+          for /f "delims=" %%i in ('"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath') do set VSINSTALLDIR=%%i
+          call "%VSINSTALLDIR%VC\Auxiliary\Build\vcvarsall.bat" amd64
+          
           set DEFS=
           if "${{ matrix.mode }}"=="headless" set DEFS=/DC99GUI_HEADLESS
           
+          mkdir build
           cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\tui\c99gui.c /Febuild\c99gui-tui.exe
           cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\pixel\gui.c /Febuild\c99gui-pixel.exe
           cl /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 %DEFS% src\vector\gui.c /Febuild\c99gui-vector.exe
