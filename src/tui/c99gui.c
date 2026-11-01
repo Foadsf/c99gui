@@ -42,7 +42,7 @@
 #include <string.h>
 
 #define APP_NAME    "c99gui"
-#define APP_VERSION "1.0.0"
+#define APP_VERSION "2.1.0"
 
 /* ---------------------------------------------------------------------------
  * Platform selection
