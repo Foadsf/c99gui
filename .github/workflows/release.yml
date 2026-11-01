@@ -10,14 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Mode: dry-run (upload only), publish-test (test publish prep), or release (full release)'
+        description: 'Mode: dry-run (upload only) or publish-test (test publish prep)'
         required: false
         default: 'dry-run'
         type: choice
         options:
           - dry-run
           - publish-test
-          - release
       version:
         description: 'Version for notes extraction (e.g., 2.1.0)'
         required: false
@@ -50,11 +49,7 @@ jobs:
               VER="${VER#v}"
             fi
             echo "version=$VER" >> $GITHUB_OUTPUT
-            if [[ "$MODE" == "release" ]]; then
-              echo "is_tag=false" >> $GITHUB_OUTPUT
-              echo "is_dry_run=false" >> $GITHUB_OUTPUT
-              echo "is_publish_test=false" >> $GITHUB_OUTPUT
-            elif [[ "$MODE" == "publish-test" ]]; then
+            if [[ "$MODE" == "publish-test" ]]; then
               echo "is_tag=false" >> $GITHUB_OUTPUT
               echo "is_dry_run=false" >> $GITHUB_OUTPUT
               echo "is_publish_test=true" >> $GITHUB_OUTPUT
@@ -155,9 +150,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path build | Out-Null
           
           & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 $defs src\tui\c99gui.c /Febuild\c99gui-tui.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\pixel\gui.c /Febuild\c99gui-pixel.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\vector\gui.c /Febuild\c99gui-vector.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\suite\gui.c /Febuild\c99gui-suite.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item LICENSE build\
           Copy-Item README.md build\
 
@@ -187,22 +186,13 @@ jobs:
           else
             tar czvf "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.tar.gz" "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
           fi
-          
-          # Generate SHA256 checksums for the archive
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            sha256sum "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.zip" > SHA256SUMS.txt
-          else
-            sha256sum "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.tar.gz" > SHA256SUMS.txt
-          fi
 
       - name: Upload artifacts
         if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
-          path: |
-            c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
-            SHA256SUMS.txt
+          path: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
           retention-days: 7
 
   # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release (or shows dry-run summary)
@@ -210,8 +200,6 @@ jobs:
     needs: [detect-mode, build]
     if: needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
     runs-on: ubuntu-latest
-    outputs:
-      notes_preview: ${{ steps.extract-notes.outputs.preview }}
     steps:
       - uses: actions/checkout@v7
       
@@ -239,20 +227,31 @@ jobs:
         shell: bash
         run: |
           TAG="${{ needs.detect-mode.outputs.version }}"
-          # Search for ## [TAG] or ## [vTAG] in CHANGELOG
-          if grep -qE "^## \\[v?${TAG}\\]" CHANGELOG.md 2>/dev/null; then
-            awk -v tag="## \\[${TAG}\\]" '
-              $0 ~ tag { found=1; next }
-              found && /^## \\/ { found=0 }
-              found { print }
-            ' CHANGELOG.md > RELEASE_NOTES.md
-            echo "notes_found=true" >> $GITHUB_OUTPUT
-            echo "preview=$(head -3 RELEASE_NOTES.md | tr '\n' ' ')" >> $GITHUB_OUTPUT
-          else
-            echo "ERROR: No changelog section found for version $TAG" >&2
+          # Search for exact heading: ## [TAG] or ## [vTAG] (fixed-string match, not regex)
+          HEADING="## [${TAG}]"
+          if ! grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
+            HEADING="## [v${TAG}]"
+            if ! grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
+              echo "ERROR: No changelog section found for version ${TAG}" >&2
+              echo "notes_found=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          fi
+          # Extract from the heading to the next ## [ (exact fixed-string)
+          awk -v h="${HEADING}" '
+            index($0, h) == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          # Fail if notes are empty
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "ERROR: Extracted release notes are empty for version ${TAG}" >&2
             echo "notes_found=false" >> $GITHUB_OUTPUT
             exit 1
           fi
+          echo "notes_found=true" >> $GITHUB_OUTPUT
+          # Print full notes for the summary
+          cat RELEASE_NOTES.md
 
       - name: Create combined SHA256SUMS
         shell: bash
@@ -289,7 +288,9 @@ jobs:
         run: |
           echo "=== PUBLISH-TEST SUMMARY ==="
           echo "Version: ${{ needs.detect-mode.outputs.version }}"
-          echo "Release notes preview: ${{ steps.extract-notes.outputs.preview }}"
+          echo "Release notes:"
+          cat RELEASE_NOTES.md
+          echo ""
           echo "Artifacts:"
           ls -la release-artifacts/
           echo "Combined SHA256SUMS:"
@@ -297,6 +298,33 @@ jobs:
           echo ""
           echo "Publish preparation successful. To create real release, push a tag:"
           echo "  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}"
+
+      - name: Negative check: 9.9.9 should not have notes
+        if: needs.detect-mode.outputs.is_publish_test == 'true'
+        shell: bash
+        run: |
+          echo "=== NEGATIVE CHECK: 9.9.9 (should fail) ==="
+          TAG="9.9.9"
+          HEADING="## [${TAG}]"
+          if grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
+            HEADING="## [v${TAG}]"
+            if grep -qF "${HEADING}" CHANGELOG.md 2>/dev/null; then
+              echo "ERROR: Found unexpected changelog section for 9.9.9" >&2
+              exit 1
+            fi
+          fi
+          # Extraction should produce empty output
+          awk -v h="## [${TAG}]" '
+            index($0, h) == 1 { found=1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' CHANGELOG.md > /tmp/notes_999.md
+          if [ -s /tmp/notes_999.md ]; then
+            echo "ERROR: Extraction produced non-empty notes for non-existent 9.9.9" >&2
+            cat /tmp/notes_999.md
+            exit 1
+          fi
+          echo "PASS: 9.9.9 correctly has no changelog section"
 
       - name: Show dry-run summary
         if: needs.detect-mode.outputs.is_dry_run == 'true'
@@ -306,4 +334,4 @@ jobs:
           echo "Version: ${{ needs.detect-mode.outputs.version }}"
           echo "Artifacts uploaded (no release created)"
           echo "To test publish preparation, use mode: publish-test"
-          echo "To create real release, use mode: release or push a tag"
+          echo "To create real release, push a tag v*"
