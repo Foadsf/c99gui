@@ -1,23 +1,20 @@
 /*
- * gui.c - Monolithic Pure C99 Pixel GUI & Immediate-Mode Widget Engine
+ * gui.c - Canonical Pure C99 2D Vector Graphics & Immediate-Mode GUI Engine
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Foad Sojoodi Farimani
  *
- * True pixel-rendered desktop GUI with a 32-bit ARGB software rasterizer,
- * sub-pixel anti-aliased rounded rectangles, alpha blending, soft drop shadows,
- * bit-packed vector-scaled font, and native OS windowing backends:
- *   - Windows : Win32 GDI (StretchDIBits)
- *   - Linux/BSD: X11 (XPutImage) or Headless Software Framebuffer
- *   - macOS   : Cocoa / CoreGraphics via C runtime (objc_msgSend)
- *
- * Build Commands:
- *   MSVC (Windows)  : cl /O2 /W4 /utf-8 src/gui.c
- *   Intel (Windows) : icx /O2 src/gui.c
- *   MinGW (Windows) : gcc -std=c99 -O2 src/gui.c -lgdi32 -luser32 -o gui.exe
- *   Linux / BSD     : cc -std=c99 -O2 src/gui.c -lX11 -o gui
- *   macOS           : cc -std=c99 -O2 src/gui.c -framework Cocoa -framework CoreGraphics -o gui
- *   Headless / Test : cc -std=c99 -O2 -DC99GUI_HEADLESS src/gui.c -o gui
+ * Zero external libraries, zero -lm dependency.
+ * Resolution-independent SDF and Bezier vector renderer:
+ *   - Proportional SVG-style quadratic Bezier typography (M, L, Q)
+ *   - Unified multi-segment vector path rasterizer (vg_line_to, vg_quad_to, vg_cubic_to, vg_arc)
+ *   - Analytical Euclidean Signed Distance Fields (SDF) for rounded rects & smooth drop shadows
+ *   - Real-time resolution-independent vector DPI scaling (0.75x - 1.30x)
+ *   - Native OS windowing backends:
+ *       Windows   : Win32 GDI (StretchDIBits)
+ *       Linux/BSD : X11 (XPutImage) or Headless Software Framebuffer
+ *       macOS     : Cocoa / CoreGraphics via C runtime (objc_msgSend)
+ *       Headless  : Automated testing (--test) and 32-bit BMP export (--snapshot)
  */
 
 #if defined(_MSC_VER) && !defined(_CRT_SECURE_NO_WARNINGS)
@@ -65,22 +62,59 @@
 
 #define APP_NAME    "c99gui"
 #define APP_VERSION "1.0.0"
-#define WIN_W       760
-#define WIN_H       480
+#define WIN_W       860
+#define WIN_H       540
+#define VG_PI       3.1415926535f
 
 /* =========================================================================
- * 1. CORE GUI STATE & IMMEDIATE-MODE CONTEXT
+ * 1. COMPILER/LIBM-AGNOSTIC FLOAT MATH (Zero -lm linker dependency)
+ * ========================================================================= */
+static float vg_absf(float x) { return x < 0.0f ? -x : x; }
+static float vg_minf(float a, float b) { return a < b ? a : b; }
+static float vg_maxf(float a, float b) { return a > b ? a : b; }
+static float vg_clampf(float x, float a, float b) { return x < a ? a : (x > b ? b : x); }
+
+static float vg_sqrtf(float x) {
+    if (x <= 0.0f) return 0.0f;
+    union { float f; uint32_t i; } u;
+    u.f = x;
+    u.i = 0x5f3759dfu - (u.i >> 1);
+    float y = u.f;
+    y = y * (1.5f - 0.5f * x * y * y);
+    y = y * (1.5f - 0.5f * x * y * y);
+    return x * y;
+}
+
+static float vg_sinf(float x) {
+    x *= 0.15915494f;
+    x -= (float)(int)x;
+    if (x < 0.0f) x += 1.0f;
+    float y = (x < 0.5f) ? (x * 4.0f - 1.0f) : (3.0f - x * 4.0f);
+    return y * (1.225f * (y * vg_absf(y) - y) + y);
+}
+
+static float vg_cosf(float x) { return vg_sinf(x + 1.57079632f); }
+
+/* =========================================================================
+ * 2. VECTOR GRAPHICS CONTEXT & SUB-PIXEL SDF RASTERIZER
  * ========================================================================= */
 typedef struct {
+    float x0, y0, vx, vy, inv_len2;
+} VgSeg;
+
+typedef struct {
     uint32_t px[WIN_W * WIN_H];
-    int mx, my;
-    bool mouse_down;
-    bool mouse_pressed;
-    bool mouse_released;
-    int active_id;
-    int hot_id;
-    int next_id;
-    int layout_x, layout_y, layout_w;
+    VgSeg segs[128];
+    int seg_count;
+    float cur_x, cur_y;
+    float min_x, min_y, max_x, max_y;
+
+    /* Immediate-Mode GUI State */
+    float mx, my;
+    bool mouse_down, mouse_pressed, mouse_released;
+    int active_id, hot_id, next_id;
+    float scale;
+    float lx, ly, lw;
     uint32_t accent;
     unsigned int tick;
     bool running;
@@ -88,301 +122,641 @@ typedef struct {
 
 static GuiCtx ui;
 
-/* =========================================================================
- * 2. HARDWARE-AGNOSTIC C99 SOFTWARE RASTERIZER (Sub-Pixel Anti-Aliased)
- * ========================================================================= */
-static uint32_t blend_argb(uint32_t dst, uint32_t src, uint32_t alpha_256) {
-    uint32_t a = (((src >> 24) & 0xFF) * alpha_256) >> 8;
+static uint32_t blend_argb(uint32_t dst, uint32_t src, float cov) {
+    uint32_t a_cov = (uint32_t)(vg_clampf(cov, 0.0f, 1.0f) * 256.0f);
+    uint32_t a = (((src >> 24) & 0xFFu) * a_cov) >> 8;
+    if (a == 0) return dst;
+    if (a >= 255u) return src | 0xFF000000u;
     uint32_t ia = 256u - a;
     uint32_t rb = ((((src & 0x00FF00FFu) * a) + ((dst & 0x00FF00FFu) * ia)) >> 8) & 0x00FF00FFu;
     uint32_t g  = ((((src & 0x0000FF00u) * a) + ((dst & 0x0000FF00u) * ia)) >> 8) & 0x0000FF00u;
     return 0xFF000000u | rb | g;
 }
 
-/* Draws an anti-aliased rounded rectangle using squared-distance fields (no sqrt needed) */
-static void draw_rrect(int x, int y, int w, int h, int r, uint32_t col) {
-    int x0 = x < 0 ? 0 : x;
-    int y0 = y < 0 ? 0 : y;
-    int x1 = (x + w) > WIN_W ? WIN_W : (x + w);
-    int y1 = (y + h) > WIN_H ? WIN_H : (y + h);
+/* Analytical Euclidean Signed Distance to a Rounded Box */
+static float sdf_rrect(float px, float py, float cx, float cy, float hw, float hh, float r) {
+    float qx = vg_absf(px - cx) - (hw - r);
+    float qy = vg_absf(py - cy) - (hh - r);
+    float ox = vg_maxf(qx, 0.0f);
+    float oy = vg_maxf(qy, 0.0f);
+    float out_d = vg_sqrtf(ox * ox + oy * oy);
+    float in_d  = vg_minf(vg_maxf(qx, qy), 0.0f);
+    return out_d + in_d - r;
+}
+
+static void vg_fill_rrect(float x, float y, float w, float h, float r, uint32_t col) {
+    float hw = w * 0.5f, hh = h * 0.5f;
+    float cx = x + hw,   cy = y + hh;
+    r = vg_minf(r, vg_minf(hw, hh));
+
+    int x0 = (int)(x - 1.0f); if (x0 < 0) x0 = 0;
+    int y0 = (int)(y - 1.0f); if (y0 < 0) y0 = 0;
+    int x1 = (int)(x + w + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
+    int y1 = (int)(y + h + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
     if (x0 >= x1 || y0 >= y1) return;
 
-    if (r * 2 > w) r = w / 2;
-    if (r * 2 > h) r = h / 2;
-
-    int r_in  = r > 0 ? (r - 1) * (r - 1) : 0;
-    int r_out = (r + 1) * (r + 1);
-    int span  = r_out - r_in;
-
     for (int py = y0; py < y1; py++) {
-        int dy = 0;
-        if (py < y + r) dy = (y + r) - py;
-        else if (py >= y + h - r) dy = py - (y + h - r - 1);
-
+        float fy = (float)py + 0.5f;
         uint32_t *row = &ui.px[py * WIN_W];
         for (int px = x0; px < x1; px++) {
-            int dx = 0;
-            if (px < x + r) dx = (x + r) - px;
-            else if (px >= x + w - r) dx = px - (x + w - r - 1);
-
-            if (dx > 0 && dy > 0) {
-                int d2 = dx * dx + dy * dy;
-                if (d2 >= r_out) continue;
-                if (d2 > r_in && span > 0) {
-                    uint32_t cov = (uint32_t)((r_out - d2) * 256 / span);
-                    row[px] = blend_argb(row[px], col, cov);
-                    continue;
-                }
+            float fx = (float)px + 0.5f;
+            /* Fast interior bypass */
+            if (fx > x + r && fx < x + w - r && fy > y + r && fy < y + h - r) {
+                row[px] = blend_argb(row[px], col, 1.0f);
+                continue;
             }
-            row[px] = blend_argb(row[px], col, 256);
+            float d = sdf_rrect(fx, fy, cx, cy, hw, hh, r);
+            if (d < 0.5f) row[px] = blend_argb(row[px], col, 0.5f - d);
         }
     }
 }
 
-/* Soft drop-shadow + bordered card surface */
-static void draw_card(int x, int y, int w, int h, int r, uint32_t bg, uint32_t border) {
-    draw_rrect(x - 2, y + 4, w + 4, h + 4, r + 3, 0x24000000u);
-    draw_rrect(x - 1, y + 2, w + 2, h + 2, r + 2, 0x38000000u);
-    draw_rrect(x, y, w, h, r, border);
-    draw_rrect(x + 1, y + 1, w - 2, h - 2, r > 1 ? r - 1 : 0, bg);
-}
+static void vg_stroke_rrect(float x, float y, float w, float h, float r, float sw, uint32_t col) {
+    float hw = w * 0.5f, hh = h * 0.5f;
+    float cx = x + hw,   cy = y + hh;
+    float hr = sw * 0.5f;
+    r = vg_minf(r, vg_minf(hw, hh));
 
-/* Compact 20-bit (4x5) packed glyph table - 100% self-contained */
-static uint32_t glyph_bits(char c) {
-    if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-    switch (c) {
-        case 'A': return 0x69F99u; case 'B': return 0xE9E9Eu; case 'C': return 0x78887u;
-        case 'D': return 0xE999Eu; case 'E': return 0xF8E8Fu; case 'F': return 0xF8E88u;
-        case 'G': return 0x78B97u; case 'H': return 0x99F99u; case 'I': return 0xE444Eu;
-        case 'J': return 0x31196u; case 'K': return 0x9ACA9u; case 'L': return 0x8888Fu;
-        case 'M': return 0x9FF99u; case 'N': return 0x9DB99u; case 'O': return 0x69996u;
-        case 'P': return 0xE9E88u; case 'Q': return 0x69963u; case 'R': return 0xE9EA9u;
-        case 'S': return 0x7861Eu; case 'T': return 0xE4444u; case 'U': return 0x99996u;
-        case 'V': return 0x99964u; case 'W': return 0x99FF9u; case 'X': return 0x96699u;
-        case 'Y': return 0x99644u; case 'Z': return 0xF248Fu;
-        case '0': return 0x69996u; case '1': return 0x4C44Eu; case '2': return 0xE168Fu;
-        case '3': return 0xE161Eu; case '4': return 0x99F11u; case '5': return 0xF8E1Eu;
-        case '6': return 0x78E96u; case '7': return 0xF1244u; case '8': return 0x69696u;
-        case '9': return 0x69716u; case ':': return 0x04040u; case '-': return 0x00F00u;
-        case '+': return 0x04E40u; case '.': return 0x00004u; case '%': return 0x92489u;
-        case '/': return 0x12480u; case '(': return 0x24442u; case ')': return 0x42224u;
-        case '!': return 0x44404u; case '_': return 0x0000Fu;
-        default:  return 0x00000u;
+    int x0 = (int)(x - sw - 2.0f); if (x0 < 0) x0 = 0;
+    int y0 = (int)(y - sw - 2.0f); if (y0 < 0) y0 = 0;
+    int x1 = (int)(x + w + sw + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
+    int y1 = (int)(y + h + sw + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int py = y0; py < y1; py++) {
+        float fy = (float)py + 0.5f;
+        uint32_t *row = &ui.px[py * WIN_W];
+        for (int px = x0; px < x1; px++) {
+            float fx = (float)px + 0.5f;
+            if (fx > x + r + sw && fx < x + w - r - sw && fy > y + r + sw && fy < y + h - r - sw)
+                continue;
+            float d = vg_absf(sdf_rrect(fx, fy, cx, cy, hw, hh, r)) - hr;
+            if (d < 0.5f) row[px] = blend_argb(row[px], col, 0.5f - d);
+        }
     }
 }
 
-static void draw_text(int x, int y, const char *s, int scale, uint32_t col) {
-    for (; *s; s++, x += 5 * scale) {
-        uint32_t g = glyph_bits(*s);
-        if (!g) continue;
-        for (int row = 0; row < 5; row++) {
-            uint32_t nibble = (g >> ((4 - row) * 4)) & 0xFu;
-            for (int bit = 0; bit < 4; bit++) {
-                if (nibble & (8u >> bit))
-                    draw_rrect(x + bit * scale, y + row * scale, scale, scale, 0, col);
+static void vg_shadow_rrect(float x, float y, float w, float h, float r, float blur, uint32_t col) {
+    float hw = w * 0.5f, hh = h * 0.5f;
+    float cx = x + hw,   cy = y + hh;
+    int x0 = (int)(x - blur); if (x0 < 0) x0 = 0;
+    int y0 = (int)(y - blur); if (y0 < 0) y0 = 0;
+    int x1 = (int)(x + w + blur); if (x1 > WIN_W) x1 = WIN_W;
+    int y1 = (int)(y + h + blur); if (y1 > WIN_H) y1 = WIN_H;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int py = y0; py < y1; py++) {
+        float fy = (float)py + 0.5f;
+        uint32_t *row = &ui.px[py * WIN_W];
+        for (int px = x0; px < x1; px++) {
+            float fx = (float)px + 0.5f;
+            if (fx > x + r && fx < x + w - r && fy > y + r && fy < y + h - r) continue;
+            float d = sdf_rrect(fx, fy, cx, cy, hw, hh, r);
+            if (d > 0.0f && d < blur) {
+                float t = 1.0f - (d / blur);
+                row[px] = blend_argb(row[px], col, t * t);
             }
         }
     }
 }
 
-static void draw_int(int x, int y, int val, const char *suffix, int scale, uint32_t col) {
-    char buf[24];
-    int i = 0;
-    if (val < 0) {
-        buf[i++] = '-';
-        val = -val;
-    }
-    if (val == 0) buf[i++] = '0';
-    else {
-        char rev[16];
-        int r = 0;
-        while (val > 0 && r < 15) { rev[r++] = (char)('0' + (val % 10)); val /= 10; }
-        while (r > 0) buf[i++] = rev[--r];
-    }
-    while (*suffix && i < 23) buf[i++] = *suffix++;
-    buf[i] = '\0';
-    draw_text(x, y, buf, scale, col);
+static void vg_fill_circle(float cx, float cy, float r, uint32_t col) {
+    vg_fill_rrect(cx - r, cy - r, r * 2.0f, r * 2.0f, r, col);
 }
 
 /* =========================================================================
- * 3. IMMEDIATE-MODE WIDGET LIBRARY
+ * 3. UNIFIED VECTOR PATH & BEZIER ENGINE (Zero Joint Overdraw)
  * ========================================================================= */
-static bool hit_box(int x, int y, int w, int h) {
+static void vg_begin_path(void) {
+    ui.seg_count = 0;
+    ui.min_x = 1e9f; ui.min_y = 1e9f;
+    ui.max_x = -1e9f; ui.max_y = -1e9f;
+}
+
+static void vg_move_to(float x, float y) {
+    ui.cur_x = x; ui.cur_y = y;
+}
+
+static void vg_line_to(float x, float y) {
+    if (ui.seg_count < 128) {
+        VgSeg *s = &ui.segs[ui.seg_count++];
+        s->x0 = ui.cur_x; s->y0 = ui.cur_y;
+        s->vx = x - ui.cur_x; s->vy = y - ui.cur_y;
+        float len2 = s->vx * s->vx + s->vy * s->vy;
+        s->inv_len2 = (len2 > 1e-6f) ? (1.0f / len2) : 0.0f;
+
+        ui.min_x = vg_minf(ui.min_x, vg_minf(ui.cur_x, x));
+        ui.min_y = vg_minf(ui.min_y, vg_minf(ui.cur_y, y));
+        ui.max_x = vg_maxf(ui.max_x, vg_maxf(ui.cur_x, x));
+        ui.max_y = vg_maxf(ui.max_y, vg_maxf(ui.cur_y, y));
+    }
+    ui.cur_x = x; ui.cur_y = y;
+}
+
+static void vg_quad_to(float cx, float cy, float x, float y) {
+    float x0 = ui.cur_x, y0 = ui.cur_y;
+    const int steps = 6;
+    for (int i = 1; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        float u = 1.0f - t;
+        float px = u * u * x0 + 2.0f * u * t * cx + t * t * x;
+        float py = u * u * y0 + 2.0f * u * t * cy + t * t * y;
+        vg_line_to(px, py);
+    }
+}
+
+static void vg_cubic_to(float c1x, float c1y, float c2x, float c2y, float x, float y) {
+    float x0 = ui.cur_x, y0 = ui.cur_y;
+    const int steps = 12;
+    for (int i = 1; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        float u = 1.0f - t;
+        float px = u*u*u*x0 + 3.0f*u*u*t*c1x + 3.0f*u*t*t*c2x + t*t*t*x;
+        float py = u*u*u*y0 + 3.0f*u*u*t*c1y + 3.0f*u*t*t*c2y + t*t*t*y;
+        vg_line_to(px, py);
+    }
+}
+
+static void vg_arc(float cx, float cy, float r, float a0, float a1, int steps) {
+    for (int i = 0; i <= steps; i++) {
+        float a = a0 + (a1 - a0) * ((float)i / (float)steps);
+        float px = cx + vg_cosf(a) * r;
+        float py = cy + vg_sinf(a) * r;
+        if (i == 0) vg_move_to(px, py);
+        else vg_line_to(px, py);
+    }
+}
+
+/* Evaluates exact minimum distance to the entire vector path in a single pass */
+static void vg_stroke(float thickness, uint32_t col) {
+    if (ui.seg_count == 0) return;
+    float rad = thickness * 0.5f;
+    float max_d = rad + 0.65f;
+    float max_d2 = max_d * max_d;
+
+    int x0 = (int)(ui.min_x - max_d - 1.0f); if (x0 < 0) x0 = 0;
+    int y0 = (int)(ui.min_y - max_d - 1.0f); if (y0 < 0) y0 = 0;
+    int x1 = (int)(ui.max_x + max_d + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
+    int y1 = (int)(ui.max_y + max_d + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
+    if (x0 >= x1 || y0 >= y1) return;
+
+    for (int py = y0; py < y1; py++) {
+        float fy = (float)py + 0.5f;
+        uint32_t *row = &ui.px[py * WIN_W];
+        for (int px = x0; px < x1; px++) {
+            float fx = (float)px + 0.5f;
+            float min_d2 = max_d2;
+            for (int i = 0; i < ui.seg_count; i++) {
+                const VgSeg *s = &ui.segs[i];
+                float wx = fx - s->x0;
+                float wy = fy - s->y0;
+                float t = (wx * s->vx + wy * s->vy) * s->inv_len2;
+                if (t < 0.0f) t = 0.0f;
+                else if (t > 1.0f) t = 1.0f;
+                float dx = wx - t * s->vx;
+                float dy = wy - t * s->vy;
+                float d2 = dx * dx + dy * dy;
+                if (d2 < min_d2) min_d2 = d2;
+            }
+            if (min_d2 < max_d2) {
+                float cov = (rad + 0.5f) - vg_sqrtf(min_d2);
+                if (cov > 0.0f) row[px] = blend_argb(row[px], col, cov);
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * 4. PROPORTIONAL BEZIER VECTOR FONT ENGINE (SVG-Style M/L/Q Outlines)
+ * ========================================================================= */
+static int hex_coord(char c) {
+    return (c >= '0' && c <= '9') ? (c - '0') : (c - 'A' + 10);
+}
+
+static const char *vg_glyph_path(char c, float *adv) {
+    *adv = 10.5f;
+    switch (c) {
+        /* Uppercase Geometric Sans-Serif (0..8 x 0..12) */
+        case 'A': return "M0CL40L8CM18L78";
+        case 'B': return "M00L0CL5CQ8C89Q8656L06M00L50Q8083Q8656";
+        case 'C': return "M83Q8040Q0004L08Q0C4CQ8C89";
+        case 'D': return "M00L0CL4CQ8C86Q8040L00";
+        case 'E': *adv = 9.5f; return "M70L00L0CL7CM06L66";
+        case 'F': *adv = 9.0f; return "M70L00L0CM06L66";
+        case 'G': return "M83Q8040Q0004L08Q0C4CQ8C88L86L46";
+        case 'H': return "M00L0CM80L8CM06L86";
+        case 'I': *adv = 6.5f; return "M10L50M30L3CM1CL5C";
+        case 'J': *adv = 9.0f; return "M60L68Q6C3CQ0C09";
+        case 'K': return "M00L0CM80L07M35L8C";
+        case 'L': *adv = 9.0f; return "M00L0CL7C";
+        case 'M': *adv = 12.0f; return "M0CL00L58LA0LAC";
+        case 'N': return "M0CL00L8CL80";
+        case 'O': return "M04Q0040Q8084L88Q8C4CQ0C08L04";
+        case 'P': return "M0CL00L50Q8083Q8656L06";
+        case 'Q': return "M04Q0040Q8084L88Q8C4CQ0C08L04M58L8C";
+        case 'R': return "M0CL00L50Q8083Q8656L06M56L8C";
+        case 'S': return "M83Q8040Q0003Q0646Q8689Q8C4CQ0C09";
+        case 'T': *adv = 9.5f; return "M00L80M40L4C";
+        case 'U': return "M00L08Q0C4CQ8C88L80";
+        case 'V': return "M00L4CL80";
+        case 'W': *adv = 12.0f; return "M00L2CL54L8CLA0";
+        case 'X': return "M00L8CM80L0C";
+        case 'Y': return "M00L46L80M46L4C";
+        case 'Z': return "M00L80L0CL8C";
+
+        /* Lowercase with true x-height (4..12), ascenders (0), & descenders (F=15) */
+        case 'a': *adv = 9.5f; return "M74L7CM76Q7444Q0408Q0C4CQ7C7A";
+        case 'b': *adv = 9.5f; return "M00L0CM06Q0444Q7478Q7C4CQ0C0A";
+        case 'c': *adv = 8.8f; return "M76Q6434Q0408Q0C3CQ6C7A";
+        case 'd': *adv = 9.5f; return "M70L7CM76Q7434Q0408Q0C3CQ7C7A";
+        case 'e': *adv = 9.2f; return "M08L78Q7434Q0408Q0C4CQ6C7A";
+        case 'f': *adv = 6.5f; return "M51Q2023L2CM05L55";
+        case 'g': *adv = 9.5f; return "M74L7CQ7F3FQ1F0DM76Q7434Q0408Q0C3CQ7C7A";
+        case 'h': *adv = 9.5f; return "M00L0CM07Q0444Q7477L7C";
+        case 'i': *adv = 4.8f; return "M20L21M24L2C";
+        case 'j': *adv = 5.5f; return "M30L31M34L3CQ3F0F";
+        case 'k': *adv = 9.0f; return "M00L0CM64L08M27L7C";
+        case 'l': *adv = 4.8f; return "M20L2AQ2C4C";
+        case 'm': *adv = 12.0f; return "M0CL04M06Q0424Q5456L5CM56Q5474QA4A6LAC";
+        case 'n': *adv = 9.5f; return "M0CL04M07Q0444Q7477L7C";
+        case 'o': *adv = 9.5f; return "M08Q0444Q7478Q7C4CQ0C08";
+        case 'p': *adv = 9.5f; return "M04L0FM06Q0444Q7478Q7C4CQ0C0A";
+        case 'q': *adv = 9.5f; return "M74L7FM76Q7434Q0408Q0C3CQ7C7A";
+        case 'r': *adv = 6.8f; return "M0CL04M07Q0434Q5455";
+        case 's': *adv = 8.8f; return "M66Q6434Q0406Q0838Q686AQ6C3CQ0C0A";
+        case 't': *adv = 6.5f; return "M21L2AQ2C5CM04L54";
+        case 'u': *adv = 9.5f; return "M04L09Q0C4CQ7C79L74";
+        case 'v': *adv = 9.0f; return "M04L3CL74";
+        case 'w': *adv = 12.0f; return "M04L2CL56L8CLA4";
+        case 'x': *adv = 9.0f; return "M04L7CM74L0C";
+        case 'y': *adv = 9.0f; return "M04L3CM74L3CQ1F0F";
+        case 'z': *adv = 8.8f; return "M04L74L0CL7C";
+
+        /* Digits & Symbols */
+        case '0': return "M04Q0040Q8084L88Q8C4CQ0C08L04M2AL62";
+        case '1': *adv = 7.0f; return "M12L30L3CM1CL5C";
+        case '2': return "M03Q0040Q8083Q8648L0CL8C";
+        case '3': return "M02Q0040Q8083Q8646Q8689Q8C4CQ0C0A";
+        case '4': return "M6CL60L08L88";
+        case '5': return "M80L00L06L56Q8689Q8C4CQ0C09";
+        case '6': return "M82Q7040Q0005L08Q0C4CQ8C89Q8545Q0508";
+        case '7': return "M00L80L3C";
+        case '8': return "M46Q0603Q0040Q8083Q8646Q0609Q0C4CQ8C89Q8646";
+        case '9': return "M0AQ1C4CQ8C87L84Q8040Q0003Q0747Q8784";
+        case '.': *adv = 5.0f; return "M2BL2C";
+        case ':': *adv = 5.0f; return "M24L25M2AL2B";
+        case '-': *adv = 8.0f; return "M16L66";
+        case '+': *adv = 9.0f; return "M16L76M43L49";
+        case '/': *adv = 8.0f; return "M1CL70";
+        case '%': *adv = 11.5f; return "M1CL70M10Q0002Q2220Q0010M7AQ6A6CQ8C8AQ6A7A";
+        case '(': *adv = 6.5f; return "M40Q164C";
+        case ')': *adv = 6.5f; return "M10Q461C";
+        default:  *adv = 5.5f; return "";
+    }
+}
+
+static float vg_text_width(const char *s, float size) {
+    float scale = size / 12.0f;
+    float w = 0.0f;
+    for (; *s; s++) {
+        float adv = 0.0f;
+        vg_glyph_path(*s, &adv);
+        w += adv * scale;
+    }
+    return w;
+}
+
+static void vg_text(float x, float y, float size, const char *s, uint32_t col) {
+    float scale = size / 12.0f;
+    float stroke = vg_maxf(size * 0.135f, 1.25f);
+
+    for (; *s; s++) {
+        float adv = 0.0f;
+        const char *p = vg_glyph_path(*s, &adv);
+        if (*p) {
+            vg_begin_path();
+            while (*p) {
+                char cmd = *p++;
+                if (cmd == 'M') {
+                    float gx = x + (float)hex_coord(p[0]) * scale;
+                    float gy = y + (float)hex_coord(p[1]) * scale;
+                    vg_move_to(gx, gy); p += 2;
+                } else if (cmd == 'L') {
+                    float gx = x + (float)hex_coord(p[0]) * scale;
+                    float gy = y + (float)hex_coord(p[1]) * scale;
+                    vg_line_to(gx, gy); p += 2;
+                } else if (cmd == 'Q') {
+                    float cx = x + (float)hex_coord(p[0]) * scale;
+                    float cy = y + (float)hex_coord(p[1]) * scale;
+                    float gx = x + (float)hex_coord(p[2]) * scale;
+                    float gy = y + (float)hex_coord(p[3]) * scale;
+                    vg_quad_to(cx, cy, gx, gy); p += 4;
+                }
+            }
+            vg_stroke(stroke, col);
+        }
+        x += adv * scale;
+    }
+}
+
+static void vg_number(float x, float y, float size, int val, const char *suffix, uint32_t col) {
+    char buf[32];
+    int i = 0;
+    if (val < 0) { buf[i++] = '-'; val = -val; }
+    if (val == 0) buf[i++] = '0';
+    else {
+        char rev[16]; int r = 0;
+        while (val > 0 && r < 15) { rev[r++] = (char)('0' + (val % 10)); val /= 10; }
+        while (r > 0) buf[i++] = rev[--r];
+    }
+    while (*suffix && i < 31) buf[i++] = *suffix++;
+    buf[i] = '\0';
+    vg_text(x, y, size, buf, col);
+}
+
+/* =========================================================================
+ * 5. IMMEDIATE-MODE VECTOR WIDGETS (Resolution-Independent)
+ * ========================================================================= */
+static bool hit_rect(float x, float y, float w, float h) {
     return ui.mx >= x && ui.mx < (x + w) && ui.my >= y && ui.my < (y + h);
 }
 
-static void gui_begin_panel(int x, int y, int w, int h, const char *title) {
-    draw_card(x, y, w, h, 12, 0xFF181926u, 0xFF2E3047u);
-    draw_text(x + 22, y + 20, title, 2, 0xFF89B4FAu);
-    draw_rrect(x + 22, y + 38, w - 44, 1, 0, 0xFF2E3047u);
-    ui.layout_x = x + 22;
-    ui.layout_y = y + 52;
-    ui.layout_w = w - 44;
+static void ui_card(float x, float y, float w, float h, float r) {
+    vg_shadow_rrect(x, y + 4.0f * ui.scale, w, h, r, 14.0f * ui.scale, 0x55000000u);
+    vg_fill_rrect(x, y, w, h, r, 0xFF181926u);
+    vg_stroke_rrect(x, y, w, h, r, 1.2f, 0xFF2E3148u);
 }
 
-static bool gui_nav_item(int x, int y, int w, const char *label, bool active) {
+static bool ui_nav_item(float x, float y, float w, const char *label, int icon_type, bool active) {
     int id = ++ui.next_id;
-    bool hover = hit_box(x, y, w, 36);
+    float h = 38.0f * ui.scale;
+    bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     bool clicked = hover && ui.mouse_pressed;
 
-    uint32_t bg = active ? ui.accent : (hover ? 0xFF25273Au : 0x00000000u);
-    uint32_t fg = active ? 0xFF11111Bu : (hover ? 0xFFCDD6F4u : 0xFF9399B2u);
-    if (bg) draw_rrect(x, y, w, 36, 8, bg);
-    draw_text(x + 16, y + 13, label, 2, fg);
+    if (active) vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, ui.accent);
+    else if (hover) vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, 0xFF23263Au);
+
+    uint32_t fg = active ? 0xFF11121Cu : (hover ? 0xFFEDF0FAu : 0xFF9399B2u);
+
+    /* Vector Icon */
+    float ix = x + 18.0f * ui.scale, iy = y + h * 0.5f, ir = 6.5f * ui.scale;
+    vg_begin_path();
+    if (icon_type == 0) { /* Vector Waveform Icon */
+        vg_move_to(ix - ir, iy);
+        vg_line_to(ix - ir * 0.4f, iy - ir);
+        vg_line_to(ix + ir * 0.4f, iy + ir);
+        vg_line_to(ix + ir, iy);
+    } else if (icon_type == 1) { /* Vector Bezier Diamond Icon */
+        vg_move_to(ix, iy - ir); vg_line_to(ix + ir, iy);
+        vg_line_to(ix, iy + ir); vg_line_to(ix - ir, iy);
+        vg_line_to(ix, iy - ir);
+    } else { /* Vector Gauge Arc Icon */
+        vg_arc(ix, iy + 1.0f, ir, 3.14f, 6.28f, 10);
+        vg_move_to(ix, iy + 1.0f); vg_line_to(ix + ir * 0.6f, iy - ir * 0.6f);
+    }
+    vg_stroke(1.7f * ui.scale, fg);
+
+    vg_text(x + 34.0f * ui.scale, y + 12.5f * ui.scale, 13.0f * ui.scale, label, fg);
     return clicked;
 }
 
-static void gui_toggle(const char *label, bool *state) {
+static void ui_toggle(const char *label, bool *state) {
     int id = ++ui.next_id;
-    int x = ui.layout_x, y = ui.layout_y, w = ui.layout_w;
-    bool hover = hit_box(x, y, w, 36);
+    float x = ui.lx, y = ui.ly, w = ui.lw, h = 40.0f * ui.scale;
+    bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     if (hover && ui.mouse_pressed) *state = !(*state);
 
-    draw_rrect(x, y, w, 36, 8, hover ? 0xFF232538u : 0xFF1E2030u);
-    draw_text(x + 14, y + 13, label, 2, 0xFFCDD6F4u);
+    vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, hover ? 0xFF23263Au : 0xFF1E2030u);
+    vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.0f, hover ? 0xFF383C5Cu : 0xFF282B40u);
+    vg_text(x + 14.0f * ui.scale, y + 13.5f * ui.scale, 13.0f * ui.scale, label, 0xFFDCE0F5u);
 
-    int px = x + w - 54, py = y + 7;
-    uint32_t pill = *state ? ui.accent : 0xFF363A4Fu;
-    draw_rrect(px, py, 40, 22, 11, pill);
-    draw_rrect(*state ? (px + 21) : (px + 3), py + 3, 16, 16, 8, 0xFFFFFFFFu);
+    float pw = 42.0f * ui.scale, ph = 22.0f * ui.scale;
+    float px = x + w - pw - 12.0f * ui.scale, py = y + (h - ph) * 0.5f;
+    vg_fill_rrect(px, py, pw, ph, ph * 0.5f, *state ? ui.accent : 0xFF33364Du);
+    float r = (ph - 6.0f * ui.scale) * 0.5f;
+    float kx = *state ? (px + pw - r - 3.0f * ui.scale) : (px + r + 3.0f * ui.scale);
+    vg_fill_circle(kx, py + ph * 0.5f, r, 0xFFFFFFFFu);
 
-    ui.layout_y += 46;
+    ui.ly += h + 10.0f * ui.scale;
 }
 
-static void gui_slider(const char *label, int *val, int min_v, int max_v) {
+static void ui_slider(const char *label, float *val, float min_v, float max_v, const char *suffix) {
     int id = ++ui.next_id;
-    int x = ui.layout_x, y = ui.layout_y, w = ui.layout_w;
-    int tx = x + 14, ty = y + 32, tw = w - 28;
+    float x = ui.lx, y = ui.ly, w = ui.lw, h = 54.0f * ui.scale;
+    float tx = x + 14.0f * ui.scale, ty = y + 36.0f * ui.scale, tw = w - 28.0f * ui.scale;
 
-    bool hover = hit_box(x, y, w, 52);
+    bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     if (hover && ui.mouse_pressed) ui.active_id = id;
 
     if (ui.active_id == id && ui.mouse_down) {
-        int v = min_v + ((ui.mx - tx) * (max_v - min_v)) / (tw > 0 ? tw : 1);
-        if (v < min_v) v = min_v;
-        if (v > max_v) v = max_v;
-        *val = v;
+        float t = vg_clampf((ui.mx - tx) / (tw > 0.0f ? tw : 1.0f), 0.0f, 1.0f);
+        *val = min_v + t * (max_v - min_v);
     }
 
-    draw_rrect(x, y, w, 52, 8, (hover || ui.active_id == id) ? 0xFF232538u : 0xFF1E2030u);
-    draw_text(x + 14, y + 10, label, 2, 0xFFCDD6F4u);
-    draw_int(x + w - 52, y + 10, *val, "%", 2, ui.accent);
+    bool active = (hover || ui.active_id == id);
+    vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, active ? 0xFF23263Au : 0xFF1E2030u);
+    vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.0f, active ? 0xFF3D4266u : 0xFF282B40u);
 
-    /* Track & Thumb */
-    draw_rrect(tx, ty, tw, 8, 4, 0xFF313244u);
-    int fill_w = ((*val - min_v) * tw) / (max_v > min_v ? max_v - min_v : 1);
-    if (fill_w > 0) draw_rrect(tx, ty, fill_w, 8, 4, ui.accent);
-    draw_rrect(tx + fill_w - 8, ty - 4, 16, 16, 8, 0xFFFFFFFFu);
+    vg_text(x + 14.0f * ui.scale, y + 10.0f * ui.scale, 13.0f * ui.scale, label, 0xFFDCE0F5u);
+    vg_number(x + w - 58.0f * ui.scale, y + 10.0f * ui.scale, 13.0f * ui.scale, (int)(*val + 0.5f), suffix, ui.accent);
 
-    ui.layout_y += 62;
+    float th = 6.0f * ui.scale;
+    vg_fill_rrect(tx, ty - th * 0.5f, tw, th, th * 0.5f, 0xFF2E3148u);
+    float norm = (*val - min_v) / (max_v - min_v);
+    float fw = norm * tw;
+    if (fw > 1.0f) vg_fill_rrect(tx, ty - th * 0.5f, fw, th, th * 0.5f, ui.accent);
+    vg_fill_circle(tx + fw, ty, 7.5f * ui.scale, 0xFFFFFFFFu);
+    vg_fill_circle(tx + fw, ty, 3.5f * ui.scale, ui.accent);
+
+    ui.ly += h + 10.0f * ui.scale;
 }
 
-static bool gui_button(const char *label) {
+static bool ui_button(const char *label) {
     int id = ++ui.next_id;
-    int x = ui.layout_x, y = ui.layout_y;
-    int w = (int)strlen(label) * 10 + 36;
-    bool hover = hit_box(x, y, w, 36);
+    float s = 13.0f * ui.scale;
+    float tw = vg_text_width(label, s);
+    float w = tw + 36.0f * ui.scale, h = 38.0f * ui.scale;
+    float x = ui.lx, y = ui.ly;
+
+    bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     bool clicked = hover && ui.mouse_pressed;
 
-    uint32_t bg = (hover && ui.mouse_down) ? 0xFFFFFFFFu : (hover ? ui.accent : 0xFF313244u);
-    uint32_t fg = hover ? 0xFF11111Bu : 0xFFCDD6F4u;
-    draw_rrect(x, y, w, 36, 8, bg);
-    draw_text(x + 18, y + 13, label, 2, fg);
-    ui.layout_y += 46;
+    uint32_t bg = (hover && ui.mouse_down) ? 0xFFFFFFFFu : (hover ? ui.accent : 0xFF2A2D42u);
+    uint32_t fg = hover ? 0xFF11121Cu : 0xFFEDF0FAu;
+    vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, bg);
+    if (!hover) vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.2f, ui.accent);
+    vg_text(x + 18.0f * ui.scale, y + 12.5f * ui.scale, s, label, fg);
+
+    ui.ly += h + 12.0f * ui.scale;
     return clicked;
 }
 
-/* =========================================================================
- * 4. APPLICATION RENDER & LOGIC LOOP
- * ========================================================================= */
-static int  app_tab    = 0;
-static bool opt_vsync  = true;
-static bool opt_aa     = true;
-static bool opt_hdr    = false;
-static int  val_gain   = 72;
-static int  val_freq   = 45;
-static int  val_lum    = 85;
-static int  pulse_cnt  = 0;
+/* Vector Circular Arc Gauge */
+static void ui_radial_gauge(float cx, float cy, float r, float pct, const char *label) {
+    float a0 = 2.356f; /* 135 deg */
+    float a1 = 7.068f; /* 405 deg */
+    vg_begin_path();
+    vg_arc(cx, cy, r, a0, a1, 28);
+    vg_stroke(6.5f * ui.scale, 0xFF282B40u);
 
-/* Fast parabolic sine approximation (eliminates <math.h> / -lm dependency) */
-static float fast_sin(float x) {
-    x *= 0.15915494f;
-    x -= (float)(int)x;
-    if (x < 0.0f) x += 1.0f;
-    float y = (x < 0.5f) ? (x * 4.0f - 1.0f) : (3.0f - x * 4.0f);
-    return y * (1.5f - 0.5f * y * y);
+    float am = a0 + (a1 - a0) * vg_clampf(pct * 0.01f, 0.0f, 1.0f);
+    if (pct > 0.5f) {
+        vg_begin_path();
+        vg_arc(cx, cy, r, a0, am, 28);
+        vg_stroke(6.5f * ui.scale, ui.accent);
+    }
+    vg_number(cx - 18.0f * ui.scale, cy - 6.0f * ui.scale, 14.5f * ui.scale, (int)pct, "%", 0xFFEDF0FAu);
+    float lw = vg_text_width(label, 11.5f * ui.scale);
+    vg_text(cx - lw * 0.5f, cy + r + 8.0f * ui.scale, 11.5f * ui.scale, label, 0xFF9399B2u);
 }
+
+/* =========================================================================
+ * 6. APPLICATION STATE & VECTOR SCENE COMPOSITOR
+ * ========================================================================= */
+static int   app_tab   = 0;
+static bool  opt_aa    = true;
+static bool  opt_hdr   = true;
+static float val_gain  = 76.0f;
+static float val_freq  = 42.0f;
+static float val_q     = 64.0f;
+static float val_scale = 100.0f; /* Live DPI Vector Scale % */
 
 static void gui_frame(void) {
     ui.next_id = 0;
     ui.hot_id = 0;
     if (ui.mouse_released) ui.active_id = 0;
+    ui.scale = vg_clampf(val_scale * 0.01f, 0.75f, 1.30f);
 
-    /* 1. Background Canvas Gradient */
+    /* 1. Smooth Vertical Gradient Background */
     for (int y = 0; y < WIN_H; y++) {
-        uint32_t b = 22u + (uint32_t)(y * 12 / WIN_H);
-        uint32_t row_col = 0xFF0E0F00u | b;
+        uint32_t b = 20u + (uint32_t)(y * 12 / WIN_H);
+        uint32_t col = 0xFF0E1000u | b;
         uint32_t *row = &ui.px[y * WIN_W];
-        for (int x = 0; x < WIN_W; x++) row[x] = row_col;
+        for (int x = 0; x < WIN_W; x++) row[x] = col;
     }
 
-    /* 2. Left Sidebar Card */
-    draw_card(20, 20, 190, 440, 12, 0xFF181926u, 0xFF2E3047u);
-    draw_rrect(36, 38, 12, 12, 6, ui.accent);
-    draw_text(56, 39, "C99 STUDIO", 2, 0xFFCDD6F4u);
+    float pad = 18.0f * ui.scale;
+    float side_w = 205.0f * ui.scale;
+    float card_h = (float)WIN_H - pad * 2.0f;
 
-    if (gui_nav_item(32, 76, 166, "DASHBOARD", app_tab == 0)) app_tab = 0;
-    if (gui_nav_item(32, 118, 166, "RENDERER",  app_tab == 1)) app_tab = 1;
-    if (gui_nav_item(32, 160, 166, "TELEMETRY", app_tab == 2)) app_tab = 2;
+    /* 2. Left Vector Navigation Sidebar */
+    ui_card(pad, pad, side_w, card_h, 12.0f * ui.scale);
 
-    /* Accent Theme Swatches */
-    draw_text(36, 392, "ACCENT THEME", 2, 0xFF6C7086u);
-    const uint32_t swatches[4] = {0xFF89B4FAu, 0xFFA6E3A1u, 0xFFCBA6F7u, 0xFFF9E2AFu};
+    /* Vector Brand Emblem (Intersecting Bezier Rings) */
+    float bx = pad + 26.0f * ui.scale, by = pad + 28.0f * ui.scale;
+    vg_fill_circle(bx, by, 9.0f * ui.scale, ui.accent);
+    vg_fill_circle(bx, by, 4.0f * ui.scale, 0xFF181926u);
+    vg_text(bx + 16.0f * ui.scale, by - 7.0f * ui.scale, 15.0f * ui.scale, "VectorUI", 0xFFEDF0FAu);
+
+    float ny = pad + 62.0f * ui.scale;
+    float nw = side_w - 24.0f * ui.scale;
+    if (ui_nav_item(pad + 12.0f * ui.scale, ny, nw, "Synthesizer", 0, app_tab == 0)) app_tab = 0;
+    if (ui_nav_item(pad + 12.0f * ui.scale, ny + 46.0f * ui.scale, nw, "Bezier Studio", 1, app_tab == 1)) app_tab = 1;
+    if (ui_nav_item(pad + 12.0f * ui.scale, ny + 92.0f * ui.scale, nw, "Vector DPI", 2, app_tab == 2)) app_tab = 2;
+
+    /* Accent Color Swatches */
+    float sy = pad + card_h - 46.0f * ui.scale;
+    vg_text(pad + 16.0f * ui.scale, sy - 22.0f * ui.scale, 11.5f * ui.scale, "Theme Accent", 0xFF6C7086u);
+    const uint32_t swatches[4] = {0xFF89B4FAu, 0xFFA6E3A1u, 0xFFCBA6F7u, 0xFFFAB387u};
     for (int i = 0; i < 4; i++) {
-        int sx = 36 + i * 38, sy = 416;
-        if (hit_box(sx, sy, 26, 26) && ui.mouse_pressed) ui.accent = swatches[i];
-        if (ui.accent == swatches[i]) draw_rrect(sx - 2, sy - 2, 30, 30, 15, 0xFFFFFFFFu);
-        draw_rrect(sx, sy, 26, 26, 13, swatches[i]);
+        float sx = pad + 28.0f * ui.scale + (float)i * 40.0f * ui.scale;
+        float sr = 11.0f * ui.scale;
+        if (hit_rect(sx - sr, sy - sr, sr * 2.0f, sr * 2.0f) && ui.mouse_pressed)
+            ui.accent = swatches[i];
+        if (ui.accent == swatches[i])
+            vg_fill_circle(sx, sy, sr + 2.5f * ui.scale, 0xFFFFFFFFu);
+        vg_fill_circle(sx, sy, sr, swatches[i]);
     }
 
-    /* 3. Main Content Panel */
-    if (app_tab == 0) {
-        gui_begin_panel(228, 20, 512, 440, "AUDIO AND PIPELINE CONTROLS");
-        gui_toggle("HARDWARE V-SYNC LOCK", &opt_vsync);
-        gui_toggle("SUBPIXEL ANTI-ALIASING", &opt_aa);
-        gui_slider("MASTER OUTPUT GAIN", &val_gain, 0, 100);
-        gui_slider("MODULATION FREQUENCY", &val_freq, 10, 100);
+    /* 3. Main Content Vector Card */
+    float mx = pad * 2.0f + side_w;
+    float mw = (float)WIN_W - mx - pad;
+    ui_card(mx, pad, mw, card_h, 12.0f * ui.scale);
 
-        /* Real-Time Animated Waveform Canvas */
-        int wx = ui.layout_x, wy = ui.layout_y + 4, ww = ui.layout_w, wh = 135;
-        draw_rrect(wx, wy, ww, wh, 8, 0xFF11121Du);
-        draw_text(wx + 14, wy + 12, "REALTIME SIGNAL WAVEFORM", 2, 0xFF6C7086u);
-        int mid_y = wy + wh / 2 + 10;
-        float amp = (float)val_gain * 0.42f;
-        float freq = (float)val_freq * 0.0025f;
-        for (int i = 12; i < ww - 12; i++) {
-            float phase = (float)i * freq + (float)ui.tick * 0.08f;
-            int py = mid_y + (int)(fast_sin(phase) * amp);
-            draw_rrect(wx + i, py - 2, 3, 5, 1, ui.accent);
+    ui.lx = mx + 22.0f * ui.scale;
+    ui.ly = pad + 56.0f * ui.scale;
+    ui.lw = mw - 44.0f * ui.scale;
+
+    if (app_tab == 0) {
+        vg_text(ui.lx, pad + 20.0f * ui.scale, 16.0f * ui.scale, "Harmonic Vector Synthesizer", 0xFFEDF0FAu);
+        ui_toggle("Sub-Pixel SDF Anti-Aliasing", &opt_aa);
+        ui_slider("Oscillator Amplitude", &val_gain, 0.0f, 100.0f, "%");
+        ui_slider("Harmonic Frequency", &val_freq, 10.0f, 100.0f, "Hz");
+
+        /* Live Vector Waveform & Radial Gauges */
+        float cy = ui.ly + 4.0f * ui.scale;
+        float ch = card_h - (cy - pad) - 18.0f * ui.scale;
+        if (ch > 80.0f * ui.scale) {
+            float gw = ui.lw * 0.62f;
+            vg_fill_rrect(ui.lx, cy, gw, ch, 10.0f * ui.scale, 0xFF11121Cu);
+            vg_stroke_rrect(ui.lx, cy, gw, ch, 10.0f * ui.scale, 1.0f, 0xFF282B40u);
+            vg_text(ui.lx + 14.0f * ui.scale, cy + 12.0f * ui.scale, 11.5f * ui.scale, "Continuous Vector Spline", 0xFF6C7086u);
+
+            vg_begin_path();
+            float mid = cy + ch * 0.56f;
+            float amp = (val_gain * 0.01f) * (ch * 0.34f);
+            int steps = 48;
+            for (int i = 0; i <= steps; i++) {
+                float t = (float)i / (float)steps;
+                float px = ui.lx + 14.0f * ui.scale + t * (gw - 28.0f * ui.scale);
+                float phase = t * (val_freq * 0.12f) + (float)ui.tick * 0.06f;
+                float py = mid + vg_sinf(phase) * amp;
+                if (i == 0) vg_move_to(px, py);
+                else vg_line_to(px, py);
+            }
+            vg_stroke(2.4f * ui.scale, ui.accent);
+
+            /* Vector Radial Arc Meters */
+            float r_rad = vg_minf(ch * 0.28f, 34.0f * ui.scale);
+            float gx1 = ui.lx + gw + (ui.lw - gw) * 0.30f;
+            float gx2 = ui.lx + gw + (ui.lw - gw) * 0.76f;
+            ui_radial_gauge(gx1, cy + ch * 0.45f, r_rad, val_gain, "Gain");
+            ui_radial_gauge(gx2, cy + ch * 0.45f, r_rad, val_freq, "Pitch");
         }
     } else if (app_tab == 1) {
-        gui_begin_panel(228, 20, 512, 440, "DISPLAY AND COLOR ENGINE");
-        gui_slider("BACKLIGHT LUMINANCE", &val_lum, 10, 100);
-        gui_toggle("10-BIT HDR COMPOSITING", &opt_hdr);
-        if (gui_button("RESET DEFAULTS")) {
-            opt_vsync = true; opt_aa = true; opt_hdr = false;
-            val_gain = 72; val_freq = 45; val_lum = 85;
+        vg_text(ui.lx, pad + 20.0f * ui.scale, 16.0f * ui.scale, "Interactive Cubic Bezier Curve", 0xFFEDF0FAu);
+        ui_slider("Control Point 1 Tension", &val_gain, 0.0f, 100.0f, "%");
+        ui_slider("Control Point 2 Curvature", &val_q, 0.0f, 100.0f, "%");
+
+        float bx0 = ui.lx, by0 = ui.ly + 6.0f * ui.scale;
+        float bw = ui.lw, bh = card_h - (by0 - pad) - 20.0f * ui.scale;
+        if (bh > 70.0f) {
+            vg_fill_rrect(bx0, by0, bw, bh, 10.0f * ui.scale, 0xFF11121Cu);
+            vg_stroke_rrect(bx0, by0, bw, bh, 10.0f * ui.scale, 1.0f, 0xFF282B40u);
+
+            float p0x = bx0 + 30.0f * ui.scale, p0y = by0 + bh - 26.0f * ui.scale;
+            float p3x = bx0 + bw - 30.0f * ui.scale, p3y = by0 + 26.0f * ui.scale;
+            float c1x = bx0 + bw * 0.35f, c1y = by0 + bh - (val_gain * 0.01f) * (bh - 30.0f * ui.scale);
+            float c2x = bx0 + bw * 0.65f, c2y = by0 + (val_q * 0.01f) * (bh - 30.0f * ui.scale);
+
+            /* Tangent Handle Lines */
+            vg_begin_path();
+            vg_move_to(p0x, p0y); vg_line_to(c1x, c1y);
+            vg_move_to(p3x, p3y); vg_line_to(c2x, c2y);
+            vg_stroke(1.4f * ui.scale, 0xFF45496Au);
+
+            /* Cubic Bezier Spline */
+            vg_begin_path();
+            vg_move_to(p0x, p0y);
+            vg_cubic_to(c1x, c1y, c2x, c2y, p3x, p3y);
+            vg_stroke(3.0f * ui.scale, ui.accent);
+
+            vg_fill_circle(p0x, p0y, 5.0f * ui.scale, 0xFFFFFFFFu);
+            vg_fill_circle(p3x, p3y, 5.0f * ui.scale, 0xFFFFFFFFu);
+            vg_fill_circle(c1x, c1y, 6.0f * ui.scale, ui.accent);
+            vg_fill_circle(c2x, c2y, 6.0f * ui.scale, ui.accent);
         }
     } else {
-        gui_begin_panel(228, 20, 512, 440, "SYSTEM TELEMETRY");
-        gui_slider("SIMULATED LOAD", &val_freq, 0, 100);
-        if (gui_button("TRIGGER PULSE")) pulse_cnt++;
-        draw_text(ui.layout_x, ui.layout_y + 10, "PULSES EXECUTED:", 2, 0xFF9399B2u);
-        draw_int(ui.layout_x + 175, ui.layout_y + 10, pulse_cnt, "", 2, ui.accent);
+        vg_text(ui.lx, pad + 20.0f * ui.scale, 16.0f * ui.scale, "Resolution-Independent Vector Scaling", 0xFFEDF0FAu);
+        ui_slider("UI Vector Scale (Live DPI)", &val_scale, 75.0f, 125.0f, "%");
+        ui_toggle("10-Bit Linear Color Blending", &opt_hdr);
+        if (ui_button("Reset 100% Scale")) val_scale = 100.0f;
+        vg_text(ui.lx, ui.ly + 8.0f * ui.scale, 12.5f * ui.scale,
+                "Drag the slider above: all fonts, icons & paths scale as pure vectors.", 0xFF9399B2u);
     }
 
     ui.mouse_pressed = false;
@@ -391,7 +765,7 @@ static void gui_frame(void) {
 }
 
 /* =========================================================================
- * 5. HEADLESS UTILITIES & BMP EXPORTER (For Testing & CLI Output)
+ * 7. HEADLESS UTILITIES & BMP EXPORTER (For Testing & CLI Output)
  * ========================================================================= */
 static bool save_bmp(const char *filename) {
     FILE *f = fopen(filename, "wb");
@@ -401,11 +775,13 @@ static bool save_bmp(const char *filename) {
     int32_t bi_height = -(int32_t)WIN_H;
     uint8_t header[54] = {
         'B', 'M',
-        (uint8_t)(file_size & 0xFFu), (uint8_t)((file_size >> 8) & 0xFFu), (uint8_t)((file_size >> 16) & 0xFFu), (uint8_t)((file_size >> 24) & 0xFFu),
+        (uint8_t)(file_size & 0xFFu), (uint8_t)((file_size >> 8) & 0xFFu),
+        (uint8_t)((file_size >> 16) & 0xFFu), (uint8_t)((file_size >> 24) & 0xFFu),
         0, 0, 0, 0,
         54, 0, 0, 0,
         40, 0, 0, 0,
-        (uint8_t)(WIN_W & 0xFF), (uint8_t)((WIN_W >> 8) & 0xFF), (uint8_t)((WIN_W >> 16) & 0xFF), (uint8_t)((WIN_W >> 24) & 0xFF),
+        (uint8_t)(WIN_W & 0xFF), (uint8_t)((WIN_W >> 8) & 0xFF),
+        (uint8_t)((WIN_W >> 16) & 0xFF), (uint8_t)((WIN_W >> 24) & 0xFF),
         (uint8_t)(bi_height & 0xFF), (uint8_t)((bi_height >> 8) & 0xFF),
         (uint8_t)((bi_height >> 16) & 0xFF), (uint8_t)((bi_height >> 24) & 0xFF),
         1, 0, 32, 0,
@@ -423,7 +799,7 @@ static bool save_bmp(const char *filename) {
 
 /* Headless smoke test: simulates interactive clicks & validates state transitions */
 static int run_headless_tests(const char *bmp_output) {
-    printf("Running C99 pixel GUI headless test suite...\n");
+    printf("Running C99 vectorized GUI headless test suite...\n");
     ui.accent = 0xFF89B4FAu;
 
     /* Frame 1: Initial render */
@@ -432,74 +808,74 @@ static int run_headless_tests(const char *bmp_output) {
         fprintf(stderr, "FAIL: framebuffer uninitialized\n");
         return 1;
     }
-    printf("ok   framebuffer rasterized (760x480)\n");
+    printf("ok   vector framebuffer rasterized (860x540)\n");
 
-    /* Test 1: Click Nav Item (Renderer tab) */
-    ui.mx = 100; ui.my = 130;
+    /* Test 1: Click Nav Item (Bezier Studio tab) */
+    ui.mx = 100.0f; ui.my = 145.0f;
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 1) {
         fprintf(stderr, "FAIL: tab switch failed (expected 1, got %d)\n", app_tab);
         return 1;
     }
-    printf("ok   nav item click (switched to Renderer tab)\n");
+    printf("ok   nav item click (switched to Bezier Studio tab)\n");
 
-    /* Test 2: Click Telemetry tab */
-    ui.mx = 100; ui.my = 175;
+    /* Test 2: Click Nav Item (Vector DPI tab) */
+    ui.mx = 100.0f; ui.my = 190.0f;
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 2) {
         fprintf(stderr, "FAIL: tab switch failed (expected 2, got %d)\n", app_tab);
         return 1;
     }
-    printf("ok   nav item click (switched to Telemetry tab)\n");
+    printf("ok   nav item click (switched to Vector DPI tab)\n");
 
-    /* Test 3: Click Trigger Pulse Button */
-    int before_pulses = pulse_cnt;
-    ui.mx = 300; ui.my = 150;
+    /* Test 3: Click Reset 100% Scale button */
+    val_scale = 120.0f;
+    ui.mx = 360.0f; ui.my = 248.0f;
     ui.mouse_pressed = true;
     gui_frame();
-    if (pulse_cnt != before_pulses + 1) {
-        fprintf(stderr, "FAIL: button trigger failed (expected %d, got %d)\n", before_pulses + 1, pulse_cnt);
+    if (val_scale != 100.0f) {
+        fprintf(stderr, "FAIL: scale reset failed (expected 100, got %f)\n", val_scale);
         return 1;
     }
-    printf("ok   button click triggered pulse (count=%d)\n", pulse_cnt);
+    printf("ok   vector button click (scale reset to 100%%)\n");
 
-    /* Test 4: Return to Dashboard */
-    ui.mx = 100; ui.my = 90;
+    /* Test 4: Return to Synthesizer tab */
+    ui.mx = 100.0f; ui.my = 95.0f;
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 0) {
-        fprintf(stderr, "FAIL: return to dashboard failed\n");
+        fprintf(stderr, "FAIL: return to synthesizer failed\n");
         return 1;
     }
-    printf("ok   nav item return to Dashboard\n");
+    printf("ok   nav item return to Synthesizer tab\n");
 
-    /* Test 5: Toggle VSync */
-    bool before_vsync = opt_vsync;
-    ui.mx = 400; ui.my = 90;
+    /* Test 5: Toggle Sub-Pixel SDF Anti-Aliasing */
+    bool before_aa = opt_aa;
+    ui.mx = 400.0f; ui.my = 94.0f;
     ui.mouse_pressed = true;
     gui_frame();
-    if (opt_vsync == before_vsync) {
-        fprintf(stderr, "FAIL: toggle vsync failed\n");
+    if (opt_aa == before_aa) {
+        fprintf(stderr, "FAIL: toggle anti-aliasing failed\n");
         return 1;
     }
-    printf("ok   toggle switch state flipped\n");
+    printf("ok   vector toggle switch state flipped\n");
 
-    /* Test 6: Drag Slider (Modulation Frequency) */
-    ui.mx = 350; ui.my = 245;
+    /* Test 6: Drag Slider (Harmonic Frequency) */
+    ui.mx = 400.0f; ui.my = 224.0f;
     ui.mouse_pressed = true;
     ui.mouse_down = true;
     gui_frame();
-    ui.mx = 450;
+    ui.mx = 500.0f;
     gui_frame();
     ui.mouse_down = false;
     ui.mouse_released = true;
     gui_frame();
-    printf("ok   slider drag processed (val_freq=%d)\n", val_freq);
+    printf("ok   vector slider drag processed (val_freq=%.1f)\n", val_freq);
 
-    /* Test 7: Accent swatch selection */
-    ui.mx = 36 + 2 * 38 + 10; ui.my = 425;
+    /* Test 7: Accent swatch selection (Purple) */
+    ui.mx = 126.0f; ui.my = 476.0f;
     ui.mouse_pressed = true;
     gui_frame();
     if (ui.accent != 0xFFCBA6F7u) {
@@ -513,7 +889,7 @@ static int run_headless_tests(const char *bmp_output) {
             fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
             return 1;
         }
-        printf("ok   snapshot saved to %s\n", bmp_output);
+        printf("ok   vector snapshot saved to %s\n", bmp_output);
     }
 
     printf("passed: 7  failed: 0\n");
@@ -523,18 +899,18 @@ static int run_headless_tests(const char *bmp_output) {
 static void print_usage(void) {
     puts("Usage: " APP_NAME " [OPTIONS]\n"
          "\n"
-         "Monolithic Pure C99 Pixel GUI & Immediate-Mode Engine.\n"
+         "Canonical Pure C99 2D Vector Graphics & Immediate-Mode GUI Engine.\n"
          "\n"
          "Options:\n"
-         "  --test                 Run automated headless test suite and exit\n"
+         "  --test                 Run automated headless vector test suite and exit\n"
          "  --snapshot <file.bmp>  Render one frame, save to 32-bit BMP and exit\n"
-         "  --headless             Run 120 simulation frames headlessly and exit\n"
+         "  --headless             Run 120 vector simulation frames headlessly and exit\n"
          "  -h, --help             Display this help message and exit\n"
          "  -V, --version          Display version information and exit\n");
 }
 
 /* =========================================================================
- * 6. NATIVE OS WINDOWING BACKENDS (Win32 / X11 / macOS Cocoa / Headless)
+ * 8. NATIVE OS WINDOWING BACKENDS (Win32 / X11 / macOS Cocoa / Headless)
  * ========================================================================= */
 #if defined(C99GUI_BACKEND_WIN32)
 
@@ -545,8 +921,8 @@ static void print_usage(void) {
 static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_MOUSEMOVE:
-            ui.mx = (int)(short)LOWORD(lp);
-            ui.my = (int)(short)HIWORD(lp);
+            ui.mx = (float)(short)LOWORD(lp);
+            ui.my = (float)(short)HIWORD(lp);
             return 0;
         case WM_LBUTTONDOWN:
             ui.mouse_down = true; ui.mouse_pressed = true;
@@ -576,13 +952,13 @@ static int run_win32_window(void) {
     wc.lpfnWndProc   = wnd_proc;
     wc.hInstance     = GetModuleHandleA(NULL);
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
-    wc.lpszClassName = "C99GuiWindow";
+    wc.lpszClassName = "C99VectorGUI";
     RegisterClassA(&wc);
 
     RECT rc = {0, 0, WIN_W, WIN_H};
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
     AdjustWindowRect(&rc, style, FALSE);
-    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "Pure C99 Native Pixel GUI", style,
+    HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "Pure C99 Vector GUI", style,
                                 CW_USEDEFAULT, CW_USEDEFAULT,
                                 rc.right - rc.left, rc.bottom - rc.top,
                                 NULL, NULL, wc.hInstance, NULL);
@@ -628,8 +1004,8 @@ typedef struct CGPoint NSPoint;
 typedef struct CGSize  NSSize;
 typedef struct CGRect  NSRect;
 
-#define msg0(r, o, s)          ((r (*)(id, SEL))objc_msgSend)((id)(o), sel_registerName(s))
-#define msg1(r, o, s, T1, a1)  ((r (*)(id, SEL, T1))objc_msgSend)((id)(o), sel_registerName(s), a1)
+#define msg0(r, o, s)         ((r (*)(id, SEL))objc_msgSend)((id)(o), sel_registerName(s))
+#define msg1(r, o, s, T1, a1) ((r (*)(id, SEL, T1))objc_msgSend)((id)(o), sel_registerName(s), a1)
 #define msg4(r, o, s, T1, a1, T2, a2, T3, a3, T4, a4) \
     ((r (*)(id, SEL, T1, T2, T3, T4))objc_msgSend)((id)(o), sel_registerName(s), a1, a2, a3, a4)
 
@@ -641,7 +1017,7 @@ static int run_cocoa_window(void) {
     id win = msg4(id, msg0(id, objc_getClass("NSWindow"), "alloc"),
                   "initWithContentRect:styleMask:backing:defer:",
                   NSRect, frame, unsigned long, 3u, unsigned long, 2u, BOOL, 0);
-    id title = msg1(id, objc_getClass("NSString"), "stringWithUTF8String:", const char *, "Pure C99 Native Pixel GUI");
+    id title = msg1(id, objc_getClass("NSString"), "stringWithUTF8String:", const char *, "Pure C99 Vector GUI");
     msg1(void, win, "setTitle:", id, title);
     msg1(void, win, "makeKeyAndOrderFront:", id, NULL);
     msg1(void, app, "activateIgnoringOtherApps:", BOOL, 1);
@@ -666,8 +1042,8 @@ static int run_cocoa_window(void) {
             msg1(void, app, "sendEvent:", id, ev);
         }
         NSPoint mp = msg0(NSPoint, win, "mouseLocationOutsideOfEventStream");
-        ui.mx = (int)mp.x;
-        ui.my = WIN_H - (int)mp.y;
+        ui.mx = (float)mp.x;
+        ui.my = (float)WIN_H - (float)mp.y;
 
         gui_frame();
         CGContextRef ctx = CGBitmapContextCreate(ui.px, WIN_W, WIN_H, 8, WIN_W * 4, cs,
@@ -696,7 +1072,7 @@ static int run_x11_window(void) {
     int scr = DefaultScreen(dpy);
     Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, WIN_W, WIN_H, 1,
                                      BlackPixel(dpy, scr), WhitePixel(dpy, scr));
-    XStoreName(dpy, win, "Pure C99 Native Pixel GUI");
+    XStoreName(dpy, win, "Pure C99 Vector GUI");
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
     Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete, 1);
@@ -713,7 +1089,7 @@ static int run_x11_window(void) {
             XEvent ev;
             XNextEvent(dpy, &ev);
             if (ev.type == MotionNotify) {
-                ui.mx = ev.xmotion.x; ui.my = ev.xmotion.y;
+                ui.mx = (float)ev.xmotion.x; ui.my = (float)ev.xmotion.y;
             } else if (ev.type == ButtonPress && ev.xbutton.button == Button1) {
                 ui.mouse_down = true; ui.mouse_pressed = true;
             } else if (ev.type == ButtonRelease && ev.xbutton.button == Button1) {
@@ -758,7 +1134,7 @@ int main(int argc, char **argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 snapshot_file = argv[++i];
             } else {
-                snapshot_file = "snapshot.bmp";
+                snapshot_file = "vector_snapshot.bmp";
             }
         } else {
             fprintf(stderr, APP_NAME ": unknown option '%s' (try --help)\n", argv[i]);

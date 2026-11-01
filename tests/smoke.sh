@@ -1,5 +1,5 @@
 #!/bin/sh
-# Headless smoke test for c99gui pixel engine.
+# Headless smoke test for c99gui vector engine.
 # Usage: tests/smoke.sh path/to/gui[.exe]
 BIN=${1:?usage: smoke.sh <binary>}
 fail=0
@@ -26,12 +26,12 @@ TMP_BMP="/tmp/c99gui_snap_$$.bmp"
 [ -d "/tmp" ] || TMP_BMP="c99gui_snap_$$.bmp"
 check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"
 
-# Validate BMP: 1459254 bytes (54 header + 760*480*4 bytes)
+# Validate BMP: 1857654 bytes (54 header + 860*540*4 bytes)
 if [ -f "$TMP_BMP" ]; then
     SIZE=$(wc -c < "$TMP_BMP" | tr -d ' ')
-    if [ "$SIZE" -eq 1459254 ]; then
+    if [ "$SIZE" -eq 1857654 ]; then
         pass=$((pass + 1))
-        printf 'ok   snapshot size exact (1459254 bytes)\n'
+        printf 'ok   snapshot size exact (1857654 bytes)\n'
     else
         fail=$((fail + 1))
         printf 'FAIL snapshot size mismatch (got %s)\n' "$SIZE"
@@ -41,3 +41,4 @@ fi
 
 echo "passed: $pass  failed: $fail"
 [ "$fail" -eq 0 ]
+
