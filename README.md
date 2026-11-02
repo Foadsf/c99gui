@@ -9,6 +9,21 @@ A collection of four single-file, zero-allocation GUI programs in portable C99. 
 
 All screenshots on this page are frames rendered by the programs themselves with `--snapshot` from the current sources.
 
+## Downloads
+
+Prebuilt binaries are on the [Releases](https://github.com/Foadsf/c99gui/releases) page. Each archive holds all four programs as single self-contained executables, plus this README and the license:
+
+| Archive | Platform | What makes it portable |
+|---|---|---|
+| `c99gui-<version>-linux-x64.tar.gz` | Linux x86-64 | Fully static (musl libc, X11 linked in); runs on any distribution with an X server, no libX11 install needed |
+| `c99gui-<version>-linux-arm64.tar.gz` | Linux ARM64 (e.g. Raspberry Pi 4/5 64-bit, Graviton) | Same, for ARM64 |
+| `c99gui-<version>-macos-universal.tar.gz` | macOS 11+ on Apple Silicon and Intel | One universal binary per program; system frameworks only |
+| `c99gui-<version>-windows-x64.zip` | Windows x64 | Static C runtime; needs only `KERNEL32`, `USER32`, `GDI32` |
+| `c99gui-<version>-windows-x86.zip` | Windows 32-bit | Same, 32-bit |
+| `c99gui-<version>-windows-arm64.zip` | Windows on ARM | Same, native ARM64 |
+
+`SHA256SUMS.txt` lists the checksums of every archive. The macOS binaries are not signed: clear the quarantine flag with `xattr -d com.apple.quarantine c99gui-*` before the first run. The three desktop GUIs also run without a display: `--test`, `--snapshot` and `--headless` work over SSH or in CI.
+
 ## The Four Programs
 
 ### 1. c99gui-tui (Terminal UI)
@@ -37,7 +52,7 @@ cl /std:c11 /W4 /O2 /MT /utf-8 src\tui\c99gui.c /Fe:c99gui-tui.exe
 
 **Source:** `src/pixel/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Runtime:** the release binaries are self-contained (see [Downloads](#downloads)); a Linux build you compile yourself links `libX11` dynamically  
 **Status:** ✅ CI compiles the Win32, X11 and Cocoa backends and runs the headless tests on all platforms
 
 A monolithic pixel-rendered desktop GUI with a 32-bit ARGB software rasterizer, sub-pixel anti-aliased rounded rectangles, alpha blending, soft drop shadows, and the public-domain VGA 8x16 font. The window is resizable and maximizable (minimum 640x450); the layout reflows from the live window size.
@@ -70,7 +85,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/pixel/gui.c -o c99gui-pixel
 
 **Source:** `src/vector/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Runtime:** the release binaries are self-contained (see [Downloads](#downloads)); a Linux build you compile yourself links `libX11` dynamically  
 **Status:** ✅ CI compiles the Win32, X11 and Cocoa backends and runs the headless tests on all platforms
 
 A resolution-independent SDF and Bézier vector graphics engine with SVG-style quadratic Bézier typography, sub-pixel anti-aliasing, and real-time DPI scaling (0.75x – 1.30x). The window is resizable and maximizable (minimum 640x400).
@@ -107,7 +122,7 @@ cc -std=c99 -O2 -DC99GUI_HEADLESS src/vector/gui.c -o c99gui-vector
 
 **Source:** `src/suite/gui.c`  
 **Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
-**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Runtime:** the release binaries are self-contained (see [Downloads](#downloads)); a Linux build you compile yourself links `libX11` dynamically  
 **Status:** ✅ CI compiles the Win32, X11 and Cocoa backends and runs the headless tests on all platforms
 
 A comprehensive vector GUI framework with five interactive workspaces: Controls Suite, Node Studio, Data & Charts, Color Picker, and Scaling & Modals. Features scrollable containers, multi-column layouts, animated widgets, dropdown menus, modal dialogs, and toast notifications. The window is resizable and maximizable (minimum 640x400).

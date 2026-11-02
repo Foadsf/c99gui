@@ -35,6 +35,9 @@ for p in pixel vector suite; do
     cc $FLAGS -static "src/$p/gui.c" $X11_STATIC -o "$OUT/c99gui-$p"
 done
 
+# Drop the debug info that comes in with the static musl/X11 libraries (about 10x the size otherwise).
+strip "$OUT"/c99gui-tui "$OUT"/c99gui-pixel "$OUT"/c99gui-vector "$OUT"/c99gui-suite
+
 # Every binary must be static, must have the X11 backend compiled in (GUIs), and must start.
 status=0
 for b in "$OUT"/c99gui-tui "$OUT"/c99gui-pixel "$OUT"/c99gui-vector "$OUT"/c99gui-suite; do

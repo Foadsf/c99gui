@@ -2152,6 +2152,9 @@ static int run_win32_window(void) {
             DispatchMessageA(&msg);
         }
         gui_frame();
+        /* px[] has stride ui.w; the DIB header must match the live size or a resized frame is sheared */
+        bmi.bmiHeader.biWidth  = ui.w;
+        bmi.bmiHeader.biHeight = -ui.h;
         StretchDIBits(hdc, 0, 0, ui.w, ui.h, 0, 0, ui.w, ui.h,
                       ui.px, &bmi, DIB_RGB_COLORS, SRCCOPY);
         Sleep(16);

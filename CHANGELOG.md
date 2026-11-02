@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `c99gui-vector`: vector desktop GUI (`src/vector/gui.c`, from branch `vector-gui` 8e39b21)
   - `c99gui-suite`: vector GUI suite (`src/suite/gui.c`, from branch `vector-suite` 9a70006)
 - **CI** (`.github/workflows/ci.yml`): compiles all four programs with warnings as errors on Linux (GCC and Clang, X11 and headless), macOS (Clang, Cocoa and headless), Windows MSVC x64 and Windows MSYS2 UCRT64 GCC, then runs the headless `--test` and `--snapshot` checks. Uses Node 24 action versions.
-- **Release workflow** (`.github/workflows/release.yml`): on a `v*` tag, builds Linux x64, macOS arm64 and Windows x64 archives (each with a top-level folder, README and LICENSE), runs the smoke tests, publishes `SHA256SUMS.txt` and takes the release notes from this file. A manual run rehearses everything except publishing.
+- **Release workflow** (`.github/workflows/release.yml`): on a `v*` tag, builds seven portable archives (each with a top-level folder, README and LICENSE), runs the smoke tests on each, publishes `SHA256SUMS.txt` and takes the release notes from this file. A manual run rehearses everything except publishing.
+  - **Linux x64 and arm64**: fully static binaries built in Alpine (musl libc, X11 linked statically; `scripts/build-static-linux.sh`), smoke-tested on the runner's Ubuntu to show they run on another distribution.
+  - **macOS universal**: one binary per program with arm64 and x86_64 slices, linked only against system frameworks; the x86_64 slice is tested under Rosetta.
+  - **Windows x64, x86 and arm64**: MSVC with the static C runtime (`/MT`); the workflow fails if any executable needs a VC runtime or UCRT DLL (they need only `KERNEL32`, `USER32`, `GDI32`).
 - **`scripts/extract-notes.sh`**: extracts one version's section from this file and fails if it is missing or empty. CI runs it on every push.
 - **Smoke tests**: `tests/smoke.sh` reads BMP dimensions from the header and includes truncated and corrupted BMP negative controls, and requires each GUI's `C99GUI_TEST_NEGATIVE=1` run to exit 1 with at least 5 real FAIL lines (exit 1 alone can be faked); `tests/tui_smoke.sh` is restored from aaf0c74.
 
@@ -38,11 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vg_sinf` (vector) returned sin(0) = 1 and sin(pi/2) = 0, which drew the knobs as hooks and the spline with a kink; the pixel GUI's `fast_sin` returned -cos. Both are now within 0.0011 of sin.
 - Vector X11: resize events were never requested (`StructureNotifyMask`), and resizing would have freed the static framebuffer through `XDestroyImage`.
 - No backend limited the window to the framebuffer, so a larger window overflowed it (the suite's buffer was only 1920x1080, so maximizing on any screen above 1080p overflowed); all three GUIs now use a 3840x2160 buffer and clamp on every path.
+- Vector and suite on Win32: the DIB header kept the startup size while the framebuffer stride followed the window, so a resized or maximized window showed sheared garbage below the first rows. The header now follows the live size every frame (checked by maximizing the release binaries on Windows 11).
 - Suite: X11 freed the static framebuffer through `XDestroyImage`, and its negative test exited 1 unconditionally, so a broken bounds checker looked the same as a working one.
 - Removed documentation claims that the code did not support, such as a "13-stage regression suite", "[78%]" knob readouts and "ACCENT THEME" in the suite. The 2.0.0 and earlier entries below are kept as originally written and contain such claims.
 
 ### Verification limits
-- Cocoa and X11 window behaviour (resize, maximize, input) is compile-checked in CI only (GCC and Clang on Linux, Clang on macOS); CI runners cannot open windows, so it has not been exercised on a real X11 or macOS desktop. Win32 resize and maximize were checked on Windows 11 (window style includes `WS_THICKFRAME` and `WS_MAXIMIZEBOX`; maximize grew the client area from 760x480 to 1536x793).
+- Cocoa and X11 window behaviour (resize, maximize, input) is compile-checked in CI only (GCC and Clang on Linux, Clang on macOS); CI runners cannot open windows, so it has not been exercised on a real X11 or macOS desktop. Win32 resize and maximize were checked on Windows 11 with the release binaries of all three GUIs (window style includes `WS_THICKFRAME` and `WS_MAXIMIZEBOX`; maximize grew each client area to 1536x793 and the maximized frame was inspected).
 
 ## [2.0.0] - 2026-11-01 (branch: `vector-suite`)
 
