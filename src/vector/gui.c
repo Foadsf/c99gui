@@ -61,9 +61,13 @@
 #endif
 
 #define APP_NAME    "c99gui"
-#define APP_VERSION "1.0.0"
+#define APP_VERSION "2.1.0"
 #define WIN_W       860
 #define WIN_H       540
+#define MIN_W       640
+#define MIN_H       400
+#define MAX_BUF_W   3840
+#define MAX_BUF_H   2160
 #define VG_PI       3.1415926535f
 
 /* =========================================================================
@@ -86,11 +90,13 @@ static float vg_sqrtf(float x) {
 }
 
 static float vg_sinf(float x) {
+    /* Wrap to [-0.5, 0.5) turns, then parabolic sine with one refinement (max error ~0.0011) */
     x *= 0.15915494f;
     x -= (float)(int)x;
-    if (x < 0.0f) x += 1.0f;
-    float y = (x < 0.5f) ? (x * 4.0f - 1.0f) : (3.0f - x * 4.0f);
-    return y * (1.225f * (y * vg_absf(y) - y) + y);
+    if (x < -0.5f) x += 1.0f;
+    else if (x >= 0.5f) x -= 1.0f;
+    float y = 8.0f * x - 16.0f * x * vg_absf(x);
+    return 0.225f * (y * vg_absf(y) - y) + y;
 }
 
 static float vg_cosf(float x) { return vg_sinf(x + 1.57079632f); }
@@ -103,7 +109,12 @@ typedef struct {
 } VgSeg;
 
 typedef struct {
-    uint32_t px[WIN_W * WIN_H];
+    char name[64];
+    int x, y, w, h, parent_id;
+} Rect;
+
+typedef struct {
+    uint32_t px[MAX_BUF_W * MAX_BUF_H];
     VgSeg segs[128];
     int seg_count;
     float cur_x, cur_y;
@@ -118,9 +129,36 @@ typedef struct {
     uint32_t accent;
     unsigned int tick;
     bool running;
+    int w, h;
+
+    /* Honest Test Framework: Widget Rect Recording */
+    Rect rects[256];
+    int rect_count;
+    int current_parent;
+    int test_negative_mode;
 } GuiCtx;
 
 static GuiCtx ui;
+
+static void record_rect(const char *name, int x, int y, int w, int h, int parent_id) {
+    if (ui.rect_count < 256) {
+        strncpy(ui.rects[ui.rect_count].name, name, 63);
+        ui.rects[ui.rect_count].name[63] = '\0';
+        ui.rects[ui.rect_count].x = x;
+        ui.rects[ui.rect_count].y = y;
+        ui.rects[ui.rect_count].w = w;
+        ui.rects[ui.rect_count].h = h;
+        ui.rects[ui.rect_count].parent_id = parent_id;
+        ui.rect_count++;
+    }
+}
+
+static int find_rect(const char *name) {
+    for (int i = 0; i < ui.rect_count; i++) {
+        if (strcmp(ui.rects[i].name, name) == 0) return i;
+    }
+    return -1;
+}
 
 static uint32_t blend_argb(uint32_t dst, uint32_t src, float cov) {
     uint32_t a_cov = (uint32_t)(vg_clampf(cov, 0.0f, 1.0f) * 256.0f);
@@ -151,13 +189,13 @@ static void vg_fill_rrect(float x, float y, float w, float h, float r, uint32_t 
 
     int x0 = (int)(x - 1.0f); if (x0 < 0) x0 = 0;
     int y0 = (int)(y - 1.0f); if (y0 < 0) y0 = 0;
-    int x1 = (int)(x + w + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
-    int y1 = (int)(y + h + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
+    int x1 = (int)(x + w + 2.0f); if (x1 > ui.w) x1 = ui.w;
+    int y1 = (int)(y + h + 2.0f); if (y1 > ui.h) y1 = ui.h;
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int py = y0; py < y1; py++) {
         float fy = (float)py + 0.5f;
-        uint32_t *row = &ui.px[py * WIN_W];
+        uint32_t *row = &ui.px[py * ui.w];
         for (int px = x0; px < x1; px++) {
             float fx = (float)px + 0.5f;
             /* Fast interior bypass */
@@ -179,13 +217,13 @@ static void vg_stroke_rrect(float x, float y, float w, float h, float r, float s
 
     int x0 = (int)(x - sw - 2.0f); if (x0 < 0) x0 = 0;
     int y0 = (int)(y - sw - 2.0f); if (y0 < 0) y0 = 0;
-    int x1 = (int)(x + w + sw + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
-    int y1 = (int)(y + h + sw + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
+    int x1 = (int)(x + w + sw + 2.0f); if (x1 > ui.w) x1 = ui.w;
+    int y1 = (int)(y + h + sw + 2.0f); if (y1 > ui.h) y1 = ui.h;
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int py = y0; py < y1; py++) {
         float fy = (float)py + 0.5f;
-        uint32_t *row = &ui.px[py * WIN_W];
+        uint32_t *row = &ui.px[py * ui.w];
         for (int px = x0; px < x1; px++) {
             float fx = (float)px + 0.5f;
             if (fx > x + r + sw && fx < x + w - r - sw && fy > y + r + sw && fy < y + h - r - sw)
@@ -201,13 +239,13 @@ static void vg_shadow_rrect(float x, float y, float w, float h, float r, float b
     float cx = x + hw,   cy = y + hh;
     int x0 = (int)(x - blur); if (x0 < 0) x0 = 0;
     int y0 = (int)(y - blur); if (y0 < 0) y0 = 0;
-    int x1 = (int)(x + w + blur); if (x1 > WIN_W) x1 = WIN_W;
-    int y1 = (int)(y + h + blur); if (y1 > WIN_H) y1 = WIN_H;
+    int x1 = (int)(x + w + blur); if (x1 > ui.w) x1 = ui.w;
+    int y1 = (int)(y + h + blur); if (y1 > ui.h) y1 = ui.h;
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int py = y0; py < y1; py++) {
         float fy = (float)py + 0.5f;
-        uint32_t *row = &ui.px[py * WIN_W];
+        uint32_t *row = &ui.px[py * ui.w];
         for (int px = x0; px < x1; px++) {
             float fx = (float)px + 0.5f;
             if (fx > x + r && fx < x + w - r && fy > y + r && fy < y + h - r) continue;
@@ -267,7 +305,12 @@ static void vg_quad_to(float cx, float cy, float x, float y) {
 
 static void vg_cubic_to(float c1x, float c1y, float c2x, float c2y, float x, float y) {
     float x0 = ui.cur_x, y0 = ui.cur_y;
-    const int steps = 12;
+    /* Estimate curve length for adaptive tessellation */
+    float dx1 = c1x - x0, dy1 = c1y - y0;
+    float dx2 = c2x - c1x, dy2 = c2y - c1y;
+    float dx3 = x - c2x, dy3 = y - c2y;
+    float est_len = vg_sqrtf(dx1*dx1 + dy1*dy1) + vg_sqrtf(dx2*dx2 + dy2*dy2) + vg_sqrtf(dx3*dx3 + dy3*dy3);
+    int steps = (int)vg_clampf(est_len * 0.5f, 12.0f, 64.0f);
     for (int i = 1; i <= steps; i++) {
         float t = (float)i / (float)steps;
         float u = 1.0f - t;
@@ -296,13 +339,13 @@ static void vg_stroke(float thickness, uint32_t col) {
 
     int x0 = (int)(ui.min_x - max_d - 1.0f); if (x0 < 0) x0 = 0;
     int y0 = (int)(ui.min_y - max_d - 1.0f); if (y0 < 0) y0 = 0;
-    int x1 = (int)(ui.max_x + max_d + 2.0f); if (x1 > WIN_W) x1 = WIN_W;
-    int y1 = (int)(ui.max_y + max_d + 2.0f); if (y1 > WIN_H) y1 = WIN_H;
+    int x1 = (int)(ui.max_x + max_d + 2.0f); if (x1 > ui.w) x1 = ui.w;
+    int y1 = (int)(ui.max_y + max_d + 2.0f); if (y1 > ui.h) y1 = ui.h;
     if (x0 >= x1 || y0 >= y1) return;
 
     for (int py = y0; py < y1; py++) {
         float fy = (float)py + 0.5f;
-        uint32_t *row = &ui.px[py * WIN_W];
+        uint32_t *row = &ui.px[py * ui.w];
         for (int px = x0; px < x1; px++) {
             float fx = (float)px + 0.5f;
             float min_d2 = max_d2;
@@ -409,8 +452,33 @@ static const char *vg_glyph_path(char c, float *adv) {
         case '+': *adv = 9.0f; return "M16L76M43L49";
         case '/': *adv = 8.0f; return "M1CL70";
         case '%': *adv = 11.5f; return "M1CL70M10Q0002Q2220Q0010M7AQ6A6CQ8C8AQ6A7A";
+        case '!': *adv = 5.0f; return "M28L20M2BL2C";
+        case '"': *adv = 7.0f; return "M20L23M50L53";
+        case '#': *adv = 10.0f; return "M30L1CM70L5CM04L84M08L88";
+        case '$': *adv = 9.0f; return "M73Q7141Q1103Q1546Q7578Q7B4BQ1B19M40L4C";
+        case '&': *adv = 10.0f; return "M8CL25Q1230Q5052Q5435L18Q0C3CQ6C87";
+        case '\'': *adv = 4.0f; return "M20L23";
+        case '*': *adv = 9.0f; return "M41L47M13L75M15L73";
+        case ',': *adv = 5.0f; return "M2BL2CQ2E0F";
+        case ';': *adv = 5.0f; return "M25L26M2BL2CQ2E0F";
+        case '<': *adv = 9.0f; return "M74L18L7C";
+        case '=': *adv = 9.0f; return "M15L75M19L79";
+        case '>': *adv = 9.0f; return "M14L78L1C";
+        case '?': *adv = 9.0f; return "M13Q1141Q7173Q7646L48M4BL4C";
+        case '@': *adv = 12.0f; return "M98Q9050Q0006Q0C5CQ8C9AM74Q4434Q3739Q3B5BQ7B78L74M78Q7A9A";
+        case '[': *adv = 6.5f; return "M50L10L1CL5C";
+        case '\\': *adv = 8.0f; return "M10L7C";
+        case ']': *adv = 6.5f; return "M10L50L5CL1C";
+        case '^': *adv = 8.0f; return "M15L41L75";
+        case '_': *adv = 9.0f; return "M0EL8E";
+        case '`': *adv = 5.0f; return "M20L32";
+        case '{': *adv = 7.5f; return "M60Q4042L44Q4626Q4648L4AQ4C6C";
+        case '|': *adv = 5.5f; return "M20L2C";
+        case '}': *adv = 7.5f; return "M10Q3032L34Q3656Q3638L3AQ3C1C";
+        case '~': *adv = 9.0f; return "M17Q2446Q6875";
         case '(': *adv = 6.5f; return "M40Q164C";
         case ')': *adv = 6.5f; return "M10Q461C";
+        case ' ': *adv = 5.5f; return "";
         default:  *adv = 5.5f; return "";
     }
 }
@@ -426,7 +494,37 @@ static float vg_text_width(const char *s, float size) {
     return w;
 }
 
+static void record_text_rect(const char *name, float x, float y, float size, const char *s) {
+    if (ui.rect_count < 256) {
+        /* Glyph y runs from the top (0) down to 12, or 15 with descenders, in size/12 units, plus half a stroke each side */
+        float scale = size / 12.0f;
+        float stroke = vg_maxf(size * 0.135f, 1.25f);
+        float bottom = 12.0f;
+        for (const char *c = s; *c; c++) {
+            if (*c == 'g' || *c == 'j' || *c == 'p' || *c == 'q' || *c == 'y' || *c == ',' || *c == ';' || *c == '_') { bottom = 15.0f; break; }
+        }
+        float w = vg_text_width(s, size);
+        float h = bottom * scale + stroke;
+        char full_name[64];
+        int n = snprintf(full_name, sizeof(full_name), "text:%s", name);
+        if (n >= 64) n = 63;
+        full_name[n] = 0;
+        /* Copy including terminating 0 */
+        for (int i = 0; i <= 63; i++) {
+            ui.rects[ui.rect_count].name[i] = full_name[i];
+            if (full_name[i] == 0) break;
+        }
+        ui.rects[ui.rect_count].x = (int)x;
+        ui.rects[ui.rect_count].y = (int)(y - stroke * 0.5f);
+        ui.rects[ui.rect_count].w = (int)(w + 0.5f);
+        ui.rects[ui.rect_count].h = (int)(h + 0.5f);
+        ui.rects[ui.rect_count].parent_id = ui.current_parent;
+        ui.rect_count++;
+    }
+}
+
 static void vg_text(float x, float y, float size, const char *s, uint32_t col) {
+    record_text_rect(s, x, y, size, s);
     float scale = size / 12.0f;
     float stroke = vg_maxf(size * 0.135f, 1.25f);
 
@@ -482,6 +580,8 @@ static bool hit_rect(float x, float y, float w, float h) {
 }
 
 static void ui_card(float x, float y, float w, float h, float r) {
+    record_rect("card", (int)x, (int)y, (int)w, (int)h, -1);
+    ui.current_parent = ui.rect_count - 1;
     vg_shadow_rrect(x, y + 4.0f * ui.scale, w, h, r, 14.0f * ui.scale, 0x55000000u);
     vg_fill_rrect(x, y, w, h, r, 0xFF181926u);
     vg_stroke_rrect(x, y, w, h, r, 1.2f, 0xFF2E3148u);
@@ -490,6 +590,8 @@ static void ui_card(float x, float y, float w, float h, float r) {
 static bool ui_nav_item(float x, float y, float w, const char *label, int icon_type, bool active) {
     int id = ++ui.next_id;
     float h = 38.0f * ui.scale;
+    int widget_rect_idx = ui.rect_count;
+    record_rect(label, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
     bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     bool clicked = hover && ui.mouse_pressed;
@@ -516,21 +618,33 @@ static bool ui_nav_item(float x, float y, float w, const char *label, int icon_t
         vg_move_to(ix, iy + 1.0f); vg_line_to(ix + ir * 0.6f, iy - ir * 0.6f);
     }
     vg_stroke(1.7f * ui.scale, fg);
-
+    
+    /* Set parent to widget rect for label text */
+    int prev_parent = ui.current_parent;
+    ui.current_parent = widget_rect_idx;
     vg_text(x + 34.0f * ui.scale, y + 12.5f * ui.scale, 13.0f * ui.scale, label, fg);
+    ui.current_parent = prev_parent;
+    
     return clicked;
 }
 
 static void ui_toggle(const char *label, bool *state) {
     int id = ++ui.next_id;
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 40.0f * ui.scale;
+    int widget_rect_idx = ui.rect_count;
+    record_rect(label, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
     bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
     if (hover && ui.mouse_pressed) *state = !(*state);
 
     vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, hover ? 0xFF23263Au : 0xFF1E2030u);
     vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.0f, hover ? 0xFF383C5Cu : 0xFF282B40u);
+    
+    /* Set parent to widget rect for label text */
+    int prev_parent = ui.current_parent;
+    ui.current_parent = widget_rect_idx;
     vg_text(x + 14.0f * ui.scale, y + 13.5f * ui.scale, 13.0f * ui.scale, label, 0xFFDCE0F5u);
+    ui.current_parent = prev_parent;
 
     float pw = 42.0f * ui.scale, ph = 22.0f * ui.scale;
     float px = x + w - pw - 12.0f * ui.scale, py = y + (h - ph) * 0.5f;
@@ -545,6 +659,8 @@ static void ui_toggle(const char *label, bool *state) {
 static void ui_slider(const char *label, float *val, float min_v, float max_v, const char *suffix) {
     int id = ++ui.next_id;
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 54.0f * ui.scale;
+    int widget_rect_idx = ui.rect_count;
+    record_rect(label, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
     float tx = x + 14.0f * ui.scale, ty = y + 36.0f * ui.scale, tw = w - 28.0f * ui.scale;
 
     bool hover = hit_rect(x, y, w, h);
@@ -560,8 +676,12 @@ static void ui_slider(const char *label, float *val, float min_v, float max_v, c
     vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, active ? 0xFF23263Au : 0xFF1E2030u);
     vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.0f, active ? 0xFF3D4266u : 0xFF282B40u);
 
+    /* Set parent to widget rect for label and value text */
+    int prev_parent = ui.current_parent;
+    ui.current_parent = widget_rect_idx;
     vg_text(x + 14.0f * ui.scale, y + 10.0f * ui.scale, 13.0f * ui.scale, label, 0xFFDCE0F5u);
     vg_number(x + w - 58.0f * ui.scale, y + 10.0f * ui.scale, 13.0f * ui.scale, (int)(*val + 0.5f), suffix, ui.accent);
+    ui.current_parent = prev_parent;
 
     float th = 6.0f * ui.scale;
     vg_fill_rrect(tx, ty - th * 0.5f, tw, th, th * 0.5f, 0xFF2E3148u);
@@ -580,6 +700,8 @@ static bool ui_button(const char *label) {
     float tw = vg_text_width(label, s);
     float w = tw + 36.0f * ui.scale, h = 38.0f * ui.scale;
     float x = ui.lx, y = ui.ly;
+    int widget_rect_idx = ui.rect_count;
+    record_rect(label, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
 
     bool hover = hit_rect(x, y, w, h);
     if (hover) ui.hot_id = id;
@@ -589,14 +711,19 @@ static bool ui_button(const char *label) {
     uint32_t fg = hover ? 0xFF11121Cu : 0xFFEDF0FAu;
     vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, bg);
     if (!hover) vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.2f, ui.accent);
+    
+    /* Set parent to widget rect for label text */
+    int prev_parent = ui.current_parent;
+    ui.current_parent = widget_rect_idx;
     vg_text(x + 18.0f * ui.scale, y + 12.5f * ui.scale, s, label, fg);
+    ui.current_parent = prev_parent;
 
     ui.ly += h + 12.0f * ui.scale;
     return clicked;
 }
 
-/* Vector Circular Arc Gauge */
 static void ui_radial_gauge(float cx, float cy, float r, float pct, const char *label) {
+    record_rect(label, (int)(cx - r), (int)(cy - r), (int)(r * 2), (int)(r * 2), ui.current_parent);
     float a0 = 2.356f; /* 135 deg */
     float a1 = 7.068f; /* 405 deg */
     vg_begin_path();
@@ -604,14 +731,27 @@ static void ui_radial_gauge(float cx, float cy, float r, float pct, const char *
     vg_stroke(6.5f * ui.scale, 0xFF282B40u);
 
     float am = a0 + (a1 - a0) * vg_clampf(pct * 0.01f, 0.0f, 1.0f);
-    if (pct > 0.5f) {
+    if (pct > 0.0f) {
         vg_begin_path();
         vg_arc(cx, cy, r, a0, am, 28);
         vg_stroke(6.5f * ui.scale, ui.accent);
     }
-    vg_number(cx - 18.0f * ui.scale, cy - 6.0f * ui.scale, 14.5f * ui.scale, (int)pct, "%", 0xFFEDF0FAu);
+    /* Draw value text above the knob, not on top */
     float lw = vg_text_width(label, 11.5f * ui.scale);
     vg_text(cx - lw * 0.5f, cy + r + 8.0f * ui.scale, 11.5f * ui.scale, label, 0xFF9399B2u);
+    char val_buf[16];
+    int val = (int)pct;
+    int i = 0;
+    if (val == 0) val_buf[i++] = '0';
+    else {
+        char rev[16]; int r_i = 0;
+        while (val > 0 && r_i < 15) { rev[r_i++] = (char)('0' + (val % 10)); val /= 10; }
+        while (r_i > 0) val_buf[i++] = rev[--r_i];
+    }
+    val_buf[i++] = '%';
+    val_buf[i] = 0;
+    float vw = vg_text_width(val_buf, 13.0f * ui.scale);
+    vg_text(cx - vw * 0.5f, cy - r - 18.0f * ui.scale, 13.0f * ui.scale, val_buf, 0xFFEDF0FAu);
 }
 
 /* =========================================================================
@@ -628,20 +768,22 @@ static float val_scale = 100.0f; /* Live DPI Vector Scale % */
 static void gui_frame(void) {
     ui.next_id = 0;
     ui.hot_id = 0;
+    ui.rect_count = 0;
+    ui.current_parent = -1;
     if (ui.mouse_released) ui.active_id = 0;
     ui.scale = vg_clampf(val_scale * 0.01f, 0.75f, 1.30f);
 
     /* 1. Smooth Vertical Gradient Background */
-    for (int y = 0; y < WIN_H; y++) {
-        uint32_t b = 20u + (uint32_t)(y * 12 / WIN_H);
+    for (int y = 0; y < ui.h; y++) {
+        uint32_t b = 20u + (uint32_t)(y * 12 / ui.h);
         uint32_t col = 0xFF0E1000u | b;
-        uint32_t *row = &ui.px[y * WIN_W];
-        for (int x = 0; x < WIN_W; x++) row[x] = col;
+        uint32_t *row = &ui.px[y * ui.w];
+        for (int x = 0; x < ui.w; x++) row[x] = col;
     }
 
     float pad = 18.0f * ui.scale;
     float side_w = 205.0f * ui.scale;
-    float card_h = (float)WIN_H - pad * 2.0f;
+    float card_h = (float)ui.h - pad * 2.0f;
 
     /* 2. Left Vector Navigation Sidebar */
     ui_card(pad, pad, side_w, card_h, 12.0f * ui.scale);
@@ -660,21 +802,24 @@ static void gui_frame(void) {
 
     /* Accent Color Swatches */
     float sy = pad + card_h - 46.0f * ui.scale;
-    vg_text(pad + 16.0f * ui.scale, sy - 22.0f * ui.scale, 11.5f * ui.scale, "Theme Accent", 0xFF6C7086u);
+    vg_text(pad + 16.0f * ui.scale, sy - 36.0f * ui.scale, 11.5f * ui.scale, "Theme Accent", 0xFF6C7086u);
     const uint32_t swatches[4] = {0xFF89B4FAu, 0xFFA6E3A1u, 0xFFCBA6F7u, 0xFFFAB387u};
+    const char *swatch_names[4] = {"Accent Swatch Blue", "Accent Swatch Green", "Accent Swatch Purple", "Accent Swatch Orange"};
     for (int i = 0; i < 4; i++) {
         float sx = pad + 28.0f * ui.scale + (float)i * 40.0f * ui.scale;
         float sr = 11.0f * ui.scale;
+        record_rect(swatch_names[i], (int)(sx - sr), (int)(sy - sr), (int)(sr * 2.0f), (int)(sr * 2.0f), ui.current_parent);
         if (hit_rect(sx - sr, sy - sr, sr * 2.0f, sr * 2.0f) && ui.mouse_pressed)
             ui.accent = swatches[i];
         if (ui.accent == swatches[i])
             vg_fill_circle(sx, sy, sr + 2.5f * ui.scale, 0xFFFFFFFFu);
         vg_fill_circle(sx, sy, sr, swatches[i]);
     }
+    ui.current_parent = -1;
 
     /* 3. Main Content Vector Card */
     float mx = pad * 2.0f + side_w;
-    float mw = (float)WIN_W - mx - pad;
+    float mw = (float)ui.w - mx - pad;
     ui_card(mx, pad, mw, card_h, 12.0f * ui.scale);
 
     ui.lx = mx + 22.0f * ui.scale;
@@ -711,9 +856,9 @@ static void gui_frame(void) {
             vg_stroke(2.4f * ui.scale, ui.accent);
 
             /* Vector Radial Arc Meters */
-            float r_rad = vg_minf(ch * 0.28f, 34.0f * ui.scale);
-            float gx1 = ui.lx + gw + (ui.lw - gw) * 0.30f;
-            float gx2 = ui.lx + gw + (ui.lw - gw) * 0.76f;
+            float r_rad = vg_minf(ch * 0.22f, 28.0f * ui.scale);
+            float gx1 = ui.lx + gw + (ui.lw - gw) * 0.25f;
+            float gx2 = ui.lx + gw + (ui.lw - gw) * 0.70f;
             ui_radial_gauge(gx1, cy + ch * 0.45f, r_rad, val_gain, "Gain");
             ui_radial_gauge(gx2, cy + ch * 0.45f, r_rad, val_freq, "Pitch");
         }
@@ -751,13 +896,14 @@ static void gui_frame(void) {
             vg_fill_circle(c2x, c2y, 6.0f * ui.scale, ui.accent);
         }
     } else {
-        vg_text(ui.lx, pad + 20.0f * ui.scale, 16.0f * ui.scale, "Resolution-Independent Vector Scaling", 0xFFEDF0FAu);
+        vg_text(ui.lx, pad + 20.0f * ui.scale, 14.0f * ui.scale, "Vector DPI Scaling", 0xFFEDF0FAu);
         ui_slider("UI Vector Scale (Live DPI)", &val_scale, 75.0f, 125.0f, "%");
         ui_toggle("10-Bit Linear Color Blending", &opt_hdr);
         if (ui_button("Reset 100% Scale")) val_scale = 100.0f;
-        vg_text(ui.lx, ui.ly + 8.0f * ui.scale, 12.5f * ui.scale,
-                "Drag the slider above: all fonts, icons & paths scale as pure vectors.", 0xFF9399B2u);
+        vg_text(ui.lx, ui.ly + 8.0f * ui.scale, 10.5f * ui.scale,
+                "Drag slider: fonts, icons & paths scale.", 0xFF9399B2u);
     }
+    ui.current_parent = -1;
 
     ui.mouse_pressed = false;
     ui.mouse_released = false;
@@ -767,12 +913,14 @@ static void gui_frame(void) {
 /* =========================================================================
  * 7. HEADLESS UTILITIES & BMP EXPORTER (For Testing & CLI Output)
  * ========================================================================= */
-static bool save_bmp(const char *filename) {
+static bool save_bmp(const char *filename, int w, int h) {
     FILE *f = fopen(filename, "wb");
     if (!f) return false;
 
-    uint32_t file_size = 54u + (uint32_t)(WIN_W * WIN_H * 4);
-    int32_t bi_height = -(int32_t)WIN_H;
+    size_t sz_w = (size_t)w;
+    size_t sz_h = (size_t)h;
+    uint32_t file_size = 54u + (uint32_t)(sz_w * sz_h * 4);
+    int32_t bi_height = -(int32_t)h;
     uint8_t header[54] = {
         'B', 'M',
         (uint8_t)(file_size & 0xFFu), (uint8_t)((file_size >> 8) & 0xFFu),
@@ -780,8 +928,8 @@ static bool save_bmp(const char *filename) {
         0, 0, 0, 0,
         54, 0, 0, 0,
         40, 0, 0, 0,
-        (uint8_t)(WIN_W & 0xFF), (uint8_t)((WIN_W >> 8) & 0xFF),
-        (uint8_t)((WIN_W >> 16) & 0xFF), (uint8_t)((WIN_W >> 24) & 0xFF),
+        (uint8_t)(w & 0xFF), (uint8_t)((w >> 8) & 0xFF),
+        (uint8_t)((w >> 16) & 0xFF), (uint8_t)((w >> 24) & 0xFF),
         (uint8_t)(bi_height & 0xFF), (uint8_t)((bi_height >> 8) & 0xFF),
         (uint8_t)((bi_height >> 16) & 0xFF), (uint8_t)((bi_height >> 24) & 0xFF),
         1, 0, 32, 0,
@@ -792,107 +940,362 @@ static bool save_bmp(const char *filename) {
     };
 
     if (fwrite(header, 1, 54, f) != 54) { fclose(f); return false; }
-    if (fwrite(ui.px, 4, WIN_W * WIN_H, f) != (size_t)(WIN_W * WIN_H)) { fclose(f); return false; }
+    if (fwrite(ui.px, 4, sz_w * sz_h, f) != sz_w * sz_h) { fclose(f); return false; }
     fclose(f);
     return true;
 }
 
 /* Headless smoke test: simulates interactive clicks & validates state transitions */
-static int run_headless_tests(const char *bmp_output) {
-    printf("Running C99 vectorized GUI headless test suite...\n");
+static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, int snap_tab) {
+    bool negative_mode = getenv("C99GUI_TEST_NEGATIVE") != NULL;
+    if (negative_mode) {
+        printf("Running C99 vectorized GUI headless test suite (NEGATIVE MODE)...\n");
+    } else {
+        printf("Running C99 vectorized GUI headless test suite...\n");
+    }
     ui.accent = 0xFF89B4FAu;
+
+    int passed = 0, failed = 0;
+
+    /* Snapshot mode: render one frame at requested size/tab and save */
+    if (bmp_output && !negative_mode) {
+        ui.w = snap_w;
+        ui.h = snap_h;
+        app_tab = snap_tab;
+        gui_frame();
+        if (!save_bmp(bmp_output, snap_w, snap_h)) {
+            fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
+            return 1;
+        }
+        printf("ok   vector snapshot saved to %s (%dx%d tab=%d)\n", bmp_output, snap_w, snap_h, snap_tab);
+        return 0;
+    }
+
+    /* Negative mode: render at 300x200 (below MIN_W/MIN_H) to force failures */
+    if (negative_mode) {
+        ui.w = 300;
+        ui.h = 200;
+        for (int t = 0; t < 3; t++) {
+            app_tab = t;
+            gui_frame();
+            for (int i = 0; i < ui.rect_count; i++) {
+                const Rect *r = &ui.rects[i];
+                int rx = r->x;
+                int ry = r->y;
+                int rw = r->w;
+                int rh = r->h;
+                if (rx < 0 || ry < 0 || rx + rw > ui.w || ry + rh > ui.h) {
+                    fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside window %dx%d\n",
+                            r->name, rx, ry, rw, rh, ui.w, ui.h);
+                    failed++;
+                }
+                if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
+                    const Rect *pr = &ui.rects[r->parent_id];
+                    if (rx < pr->x || ry < pr->y || rx + rw > pr->x + pr->w || ry + rh > pr->y + pr->h) {
+                        fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside parent '%s' [%d,%d,%d,%d]\n",
+                                r->name, rx, ry, rw, rh, pr->name, pr->x, pr->y, pr->w, pr->h);
+                        failed++;
+                    }
+                }
+            }
+            /* Sibling overlap check */
+            for (int i = 0; i < ui.rect_count; i++) {
+                for (int j = i + 1; j < ui.rect_count; j++) {
+                    const Rect *a = &ui.rects[i];
+                    const Rect *b = &ui.rects[j];
+                    /* Text rects count: labels are parented to their own widget, so a label on a sibling is a real overlap */
+                    if (a->parent_id >= 0 && a->parent_id == b->parent_id) {
+                        if (a->x < b->x + b->w && a->x + a->w > b->x &&
+                            a->y < b->y + b->h && a->y + a->h > b->y) {
+                            fprintf(stderr, "FAIL: sibling overlap: '%s' [%d,%d,%d,%d] intersects '%s' [%d,%d,%d,%d] (parent %d)\n",
+                                    a->name, a->x, a->y, a->w, a->h, b->name, b->x, b->y, b->w, b->h, a->parent_id);
+                            failed++;
+                        }
+                    }
+                }
+            }
+        }
+        printf("passed: %d  failed: %d\n", passed, failed);
+        return failed > 0 ? 1 : 0;
+    }
+
+    /* Resize honesty test: at MIN_W x MIN_H and 1920x1080, every recorded rect must be inside window and parent */
+    int test_sizes[2][2] = {{MIN_W, MIN_H}, {1920, 1080}};
+    for (int sz = 0; sz < 2; sz++) {
+        int tw = test_sizes[sz][0];
+        int th = test_sizes[sz][1];
+        ui.w = tw;
+        ui.h = th;
+        int size_failed = 0;
+        for (int t = 0; t < 3; t++) {
+            app_tab = t;
+            gui_frame();
+            int tab_rects = ui.rect_count;
+            int tab_failed = 0;
+            for (int i = 0; i < ui.rect_count; i++) {
+                const Rect *r = &ui.rects[i];
+                int rx = r->x;
+                int ry = r->y;
+                int rw = r->w;
+                int rh = r->h;
+                if (rx < 0 || ry < 0 || rx + rw > tw || ry + rh > th) {
+                    fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside window %dx%d\n",
+                            r->name, rx, ry, rw, rh, tw, th);
+                    failed++; tab_failed++;
+                }
+                if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
+                    const Rect *pr = &ui.rects[r->parent_id];
+                    if (rx < pr->x || ry < pr->y || rx + rw > pr->x + pr->w || ry + rh > pr->y + pr->h) {
+                        fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside parent '%s' [%d,%d,%d,%d]\n",
+                                r->name, rx, ry, rw, rh, pr->name, pr->x, pr->y, pr->w, pr->h);
+                        failed++; tab_failed++;
+                    }
+                }
+            }
+            /* Sibling overlap check: no two rects with same parent may intersect (skip text rects) */
+            for (int i = 0; i < ui.rect_count; i++) {
+                for (int j = i + 1; j < ui.rect_count; j++) {
+                    const Rect *a = &ui.rects[i];
+                    const Rect *b = &ui.rects[j];
+                    /* Text rects count: labels are parented to their own widget, so a label on a sibling is a real overlap */
+                    if (a->parent_id >= 0 && a->parent_id == b->parent_id) {
+                        if (a->x < b->x + b->w && a->x + a->w > b->x &&
+                            a->y < b->y + b->h && a->y + a->h > b->y) {
+                            fprintf(stderr, "FAIL: sibling overlap: '%s' [%d,%d,%d,%d] intersects '%s' [%d,%d,%d,%d] (parent %d)\n",
+                                    a->name, a->x, a->y, a->w, a->h, b->name, b->x, b->y, b->w, b->h, a->parent_id);
+                            failed++; tab_failed++;
+                        }
+                    }
+                }
+            }
+            if (tab_failed == 0) {
+                printf("ok   bounds %dx%d tab%d: %d rects\n", tw, th, t, tab_rects);
+                passed++;
+            } else {
+                size_failed = 1;
+                printf("FAIL  bounds %dx%d tab%d: %d rects (%d failures)\n", tw, th, t, tab_rects, tab_failed);
+            }
+        }
+        if (size_failed == 0) {
+            printf("ok   resize honesty test at %dx%d\n", tw, th);
+            passed++;
+        }
+    }
+
+    /* vg_sinf correctness CHECKs */
+    if (vg_absf(vg_sinf(0.0f) - 0.0f) <= 0.005f &&
+        vg_absf(vg_sinf(0.5235988f) - 0.5f) <= 0.005f &&
+        vg_absf(vg_sinf(1.5707963f) - 1.0f) <= 0.005f &&
+        vg_absf(vg_sinf(3.1415927f) - 0.0f) <= 0.005f &&
+        vg_absf(vg_sinf(4.712389f) - (-1.0f)) <= 0.005f &&
+        vg_absf(vg_sinf(-1.5707963f) - (-1.0f)) <= 0.005f &&
+        vg_absf(vg_sinf(7.5f) - 0.938f) <= 0.005f) {
+        printf("ok   vg_sinf accuracy check passed\n");
+        passed++;
+    } else {
+        fprintf(stderr, "FAIL: vg_sinf accuracy check failed\n");
+        failed++;
+    }
+
+    /* Glyph coverage test: every printable ASCII 33-126 lights at least one pixel */
+    int glyph_ok = 0, glyph_fail = 0;
+    for (int c = 33; c <= 126; c++) {
+        /* Clear a small test buffer */
+        for (int i = 0; i < 64 * 64; i++) ui.px[i] = 0;
+        int test_w = 64, test_h = 64;
+        ui.w = test_w; ui.h = test_h;
+        ui.scale = 1.0f;
+        /* Draw the glyph at a known position */
+        vg_text(10.0f, 32.0f, 24.0f, (const char[]){(char)c, 0}, 0xFFFFFFFFu);
+        /* Check if any pixel lit */
+        bool lit = false;
+        for (int y = 0; y < test_h && !lit; y++) {
+            for (int x = 0; x < test_w && !lit; x++) {
+                if (ui.px[y * test_w + x] != 0) lit = true;
+            }
+        }
+        if (lit) glyph_ok++;
+        else {
+            fprintf(stderr, "FAIL: glyph '%c' (0x%02X) lights no pixels\n", c, c);
+            glyph_fail++;
+        }
+    }
+    if (glyph_fail == 0) {
+        printf("ok   glyph coverage test: %d/94 printable ASCII chars render\n", glyph_ok);
+        passed++;
+    } else {
+        failed += glyph_fail;
+    }
+
+    /* Standard interactive tests at default size */
+    ui.w = WIN_W;
+    ui.h = WIN_H;
 
     /* Frame 1: Initial render */
     gui_frame();
     if (ui.px[100 * WIN_W + 100] == 0) {
         fprintf(stderr, "FAIL: framebuffer uninitialized\n");
-        return 1;
+        failed++;
+    } else {
+        printf("ok   vector framebuffer rasterized (%dx%d)\n", WIN_W, WIN_H);
+        passed++;
     }
-    printf("ok   vector framebuffer rasterized (860x540)\n");
 
     /* Test 1: Click Nav Item (Bezier Studio tab) */
-    ui.mx = 100.0f; ui.my = 145.0f;
+    int nav_idx = find_rect("Bezier Studio");
+    if (nav_idx >= 0) {
+        ui.mx = (float)ui.rects[nav_idx].x + 10.0f;
+        ui.my = (float)ui.rects[nav_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: nav item rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 1) {
         fprintf(stderr, "FAIL: tab switch failed (expected 1, got %d)\n", app_tab);
-        return 1;
+        failed++;
+    } else {
+        printf("ok   nav item click (switched to Bezier Studio tab)\n");
+        passed++;
     }
-    printf("ok   nav item click (switched to Bezier Studio tab)\n");
 
     /* Test 2: Click Nav Item (Vector DPI tab) */
-    ui.mx = 100.0f; ui.my = 190.0f;
+    nav_idx = find_rect("Vector DPI");
+    if (nav_idx >= 0) {
+        ui.mx = (float)ui.rects[nav_idx].x + 10.0f;
+        ui.my = (float)ui.rects[nav_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: nav item rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 2) {
         fprintf(stderr, "FAIL: tab switch failed (expected 2, got %d)\n", app_tab);
-        return 1;
+        failed++;
+    } else {
+        printf("ok   nav item click (switched to Vector DPI tab)\n");
+        passed++;
     }
-    printf("ok   nav item click (switched to Vector DPI tab)\n");
 
     /* Test 3: Click Reset 100% Scale button */
     val_scale = 120.0f;
-    ui.mx = 360.0f; ui.my = 248.0f;
+    gui_frame();  /* Record rects at new scale */
+    int btn_idx = find_rect("Reset 100% Scale");
+    if (btn_idx >= 0) {
+        ui.mx = (float)ui.rects[btn_idx].x + 10.0f;
+        ui.my = (float)ui.rects[btn_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: button rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (val_scale != 100.0f) {
         fprintf(stderr, "FAIL: scale reset failed (expected 100, got %f)\n", val_scale);
-        return 1;
+        failed++;
+    } else {
+        printf("ok   vector button click (scale reset to 100%%)\n");
+        passed++;
     }
-    printf("ok   vector button click (scale reset to 100%%)\n");
 
     /* Test 4: Return to Synthesizer tab */
-    ui.mx = 100.0f; ui.my = 95.0f;
+    int synth_idx = find_rect("Synthesizer");
+    if (synth_idx >= 0) {
+        ui.mx = (float)ui.rects[synth_idx].x + 10.0f;
+        ui.my = (float)ui.rects[synth_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: nav item rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (app_tab != 0) {
         fprintf(stderr, "FAIL: return to synthesizer failed\n");
-        return 1;
+        failed++;
+    } else {
+        printf("ok   nav item return to Synthesizer tab\n");
+        passed++;
     }
-    printf("ok   nav item return to Synthesizer tab\n");
 
     /* Test 5: Toggle Sub-Pixel SDF Anti-Aliasing */
     bool before_aa = opt_aa;
-    ui.mx = 400.0f; ui.my = 94.0f;
+    int toggle_idx = find_rect("Sub-Pixel SDF Anti-Aliasing");
+    if (toggle_idx >= 0) {
+        ui.mx = (float)ui.rects[toggle_idx].x + 10.0f;
+        ui.my = (float)ui.rects[toggle_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: toggle rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (opt_aa == before_aa) {
         fprintf(stderr, "FAIL: toggle anti-aliasing failed\n");
-        return 1;
+        failed++;
+    } else {
+        printf("ok   vector toggle switch state flipped\n");
+        passed++;
     }
-    printf("ok   vector toggle switch state flipped\n");
 
     /* Test 6: Drag Slider (Harmonic Frequency) */
-    ui.mx = 400.0f; ui.my = 224.0f;
-    ui.mouse_pressed = true;
-    ui.mouse_down = true;
-    gui_frame();
-    ui.mx = 500.0f;
-    gui_frame();
-    ui.mouse_down = false;
-    ui.mouse_released = true;
-    gui_frame();
-    printf("ok   vector slider drag processed (val_freq=%.1f)\n", val_freq);
+    float val_freq_before = val_freq;
+    int slider_idx = find_rect("Harmonic Frequency");
+    if (slider_idx >= 0) {
+        ui.mx = (float)ui.rects[slider_idx].x + 10.0f;
+        ui.my = (float)ui.rects[slider_idx].y + 20.0f;
+        ui.mouse_pressed = true;
+        ui.mouse_down = true;
+        gui_frame();
+        ui.mx = (float)ui.rects[slider_idx].x + (float)ui.rects[slider_idx].w - 10.0f;
+        gui_frame();
+        ui.mouse_down = false;
+        ui.mouse_released = true;
+        gui_frame();
+    } else {
+        fprintf(stderr, "FAIL: slider rect not found\n");
+        failed++;
+    }
+    if (val_freq > val_freq_before) {
+        printf("ok   vector slider drag processed (val_freq=%.1f, delta=%.1f)\n", val_freq, val_freq - val_freq_before);
+        passed++;
+    } else {
+        fprintf(stderr, "FAIL: slider did not change value (before=%.1f, after=%.1f)\n", val_freq_before, val_freq);
+        failed++;
+    }
 
     /* Test 7: Accent swatch selection (Purple) */
-    ui.mx = 126.0f; ui.my = 476.0f;
+    int swatch_idx = find_rect("Accent Swatch Purple");
+    if (swatch_idx >= 0) {
+        ui.mx = (float)ui.rects[swatch_idx].x + 10.0f;
+        ui.my = (float)ui.rects[swatch_idx].y + 10.0f;
+    } else {
+        fprintf(stderr, "FAIL: swatch rect not found\n");
+        failed++;
+    }
     ui.mouse_pressed = true;
     gui_frame();
     if (ui.accent != 0xFFCBA6F7u) {
         fprintf(stderr, "FAIL: accent swatch failed (got 0x%08X)\n", ui.accent);
-        return 1;
+        failed++;
+    } else {
+        printf("ok   accent theme swatch selected (purple 0x%08X)\n", ui.accent);
+        passed++;
     }
-    printf("ok   accent theme swatch selected (purple 0x%08X)\n", ui.accent);
 
-    if (bmp_output) {
-        if (!save_bmp(bmp_output)) {
+    if (bmp_output && !negative_mode) {
+        if (!save_bmp(bmp_output, WIN_W, WIN_H)) {
             fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
-            return 1;
+            failed++;
+        } else {
+            printf("ok   vector snapshot saved to %s\n", bmp_output);
+            passed++;
         }
-        printf("ok   vector snapshot saved to %s\n", bmp_output);
     }
 
-    printf("passed: 7  failed: 0\n");
+    printf("passed: %d  failed: %d\n", passed, failed);
+    if (failed > 0) return 1;
     return 0;
 }
 
@@ -904,6 +1307,8 @@ static void print_usage(void) {
          "Options:\n"
          "  --test                 Run automated headless vector test suite and exit\n"
          "  --snapshot <file.bmp>  Render one frame, save to 32-bit BMP and exit\n"
+         "  --size WxH             Set snapshot size (default: 860x540)\n"
+         "  --tab N                Set snapshot tab index (default: 0)\n"
          "  --headless             Run 120 vector simulation frames headlessly and exit\n"
          "  -h, --help             Display this help message and exit\n"
          "  -V, --version          Display version information and exit\n");
@@ -935,6 +1340,20 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_KEYDOWN:
             if (wp == VK_ESCAPE) ui.running = false;
             return 0;
+        case WM_SIZE:
+            if (wp != SIZE_MINIMIZED) {
+                ui.w = (int)(short)LOWORD(lp);
+                ui.h = (int)(short)HIWORD(lp);
+                if (ui.w < MIN_W) ui.w = MIN_W;
+                if (ui.h < MIN_H) ui.h = MIN_H;
+            }
+            return 0;
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO *mmi = (MINMAXINFO *)lp;
+            mmi->ptMinTrackSize.x = MIN_W;
+            mmi->ptMinTrackSize.y = MIN_H;
+            return 0;
+        }
         case WM_CLOSE:
         case WM_DESTROY:
             ui.running = false;
@@ -956,7 +1375,7 @@ static int run_win32_window(void) {
     RegisterClassA(&wc);
 
     RECT rc = {0, 0, WIN_W, WIN_H};
-    DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
+    DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
     AdjustWindowRect(&rc, style, FALSE);
     HWND hwnd = CreateWindowExA(0, wc.lpszClassName, "Pure C99 Vector GUI", style,
                                 CW_USEDEFAULT, CW_USEDEFAULT,
@@ -978,6 +1397,8 @@ static int run_win32_window(void) {
     bmi.bmiHeader.biCompression = BI_RGB;
 
     ui.accent = 0xFF89B4FAu;
+    ui.w = WIN_W;
+    ui.h = WIN_H;
     ui.running = true;
     while (ui.running) {
         MSG msg;
@@ -986,7 +1407,7 @@ static int run_win32_window(void) {
             DispatchMessageA(&msg);
         }
         gui_frame();
-        StretchDIBits(hdc, 0, 0, WIN_W, WIN_H, 0, 0, WIN_W, WIN_H,
+        StretchDIBits(hdc, 0, 0, ui.w, ui.h, 0, 0, ui.w, ui.h,
                       ui.px, &bmi, DIB_RGB_COLORS, SRCCOPY);
         Sleep(16);
     }
@@ -1016,7 +1437,7 @@ static int run_cocoa_window(void) {
     NSRect frame = {{100.0, 100.0}, {(double)WIN_W, (double)WIN_H}};
     id win = msg4(id, msg0(id, objc_getClass("NSWindow"), "alloc"),
                   "initWithContentRect:styleMask:backing:defer:",
-                  NSRect, frame, unsigned long, 3u, unsigned long, 2u, BOOL, 0);
+                  NSRect, frame, unsigned long, 15u, unsigned long, 2u, BOOL, 0);
     id title = msg1(id, objc_getClass("NSString"), "stringWithUTF8String:", const char *, "Pure C99 Vector GUI");
     msg1(void, win, "setTitle:", id, title);
     msg1(void, win, "makeKeyAndOrderFront:", id, NULL);
@@ -1029,6 +1450,8 @@ static int run_cocoa_window(void) {
     msg1(void, view, "setWantsLayer:", BOOL, 1);
 
     ui.accent = 0xFF89B4FAu;
+    ui.w = WIN_W;
+    ui.h = WIN_H;
     ui.running = true;
     while (ui.running && msg0(BOOL, win, "isVisible")) {
         id ev;
@@ -1043,10 +1466,10 @@ static int run_cocoa_window(void) {
         }
         NSPoint mp = msg0(NSPoint, win, "mouseLocationOutsideOfEventStream");
         ui.mx = (float)mp.x;
-        ui.my = (float)WIN_H - (float)mp.y;
+        ui.my = (float)ui.h - (float)mp.y;
 
         gui_frame();
-        CGContextRef ctx = CGBitmapContextCreate(ui.px, WIN_W, WIN_H, 8, WIN_W * 4, cs,
+        CGContextRef ctx = CGBitmapContextCreate(ui.px, ui.w, ui.h, 8, ui.w * 4, cs,
                            (uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaNoneSkipFirst);
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         msg1(void, layer, "setContents:", id, (id)img);
@@ -1083,6 +1506,8 @@ static int run_x11_window(void) {
                                ZPixmap, 0, (char *)ui.px, WIN_W, WIN_H, 32, 0);
 
     ui.accent = 0xFF89B4FAu;
+    ui.w = WIN_W;
+    ui.h = WIN_H;
     ui.running = true;
     while (ui.running) {
         while (XPending(dpy) > 0) {
@@ -1096,12 +1521,22 @@ static int run_x11_window(void) {
                 ui.mouse_down = false; ui.mouse_released = true;
             } else if (ev.type == KeyPress) {
                 if (XLookupKeysym(&ev.xkey, 0) == XK_Escape) ui.running = false;
+            } else if (ev.type == ConfigureNotify) {
+                if (ev.xconfigure.width != ui.w || ev.xconfigure.height != ui.h) {
+                    ui.w = ev.xconfigure.width;
+                    ui.h = ev.xconfigure.height;
+                    if (ui.w < MIN_W) ui.w = MIN_W;
+                    if (ui.h < MIN_H) ui.h = MIN_H;
+                    XDestroyImage(img);
+                    img = XCreateImage(dpy, DefaultVisual(dpy, scr), (unsigned int)DefaultDepth(dpy, scr),
+                                       ZPixmap, 0, (char *)ui.px, ui.w, ui.h, 32, 0);
+                }
             } else if (ev.type == ClientMessage && (Atom)ev.xclient.data.l[0] == wm_delete) {
                 ui.running = false;
             }
         }
         gui_frame();
-        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, WIN_W, WIN_H);
+        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, ui.w, ui.h);
         XFlush(dpy);
 
         struct timespec ts = {0, 16000000L};
@@ -1116,6 +1551,9 @@ static int run_x11_window(void) {
 
 int main(int argc, char **argv) {
     const char *snapshot_file = NULL;
+    int snapshot_w = WIN_W;
+    int snapshot_h = WIN_H;
+    int snapshot_tab = 0;
     bool do_test = false;
     bool headless = false;
 
@@ -1136,6 +1574,21 @@ int main(int argc, char **argv) {
             } else {
                 snapshot_file = "vector_snapshot.bmp";
             }
+        } else if (!strcmp(argv[i], "--size")) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                char *next = argv[++i];
+                char *x = strchr(next, 'x');
+                if (x) {
+                    *x = '\0';
+                    snapshot_w = atoi(next);
+                    snapshot_h = atoi(x + 1);
+                    *x = 'x';
+                }
+            }
+        } else if (!strcmp(argv[i], "--tab")) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                snapshot_tab = atoi(argv[++i]);
+            }
         } else {
             fprintf(stderr, APP_NAME ": unknown option '%s' (try --help)\n", argv[i]);
             return 2;
@@ -1143,7 +1596,7 @@ int main(int argc, char **argv) {
     }
 
     if (do_test || snapshot_file) {
-        return run_headless_tests(snapshot_file);
+        return run_headless_tests(snapshot_file, snapshot_w, snapshot_h, snapshot_tab);
     }
 
     if (headless) {
@@ -1161,6 +1614,6 @@ int main(int argc, char **argv) {
 #elif defined(C99GUI_BACKEND_X11)
     return run_x11_window();
 #else
-    return run_headless_tests(NULL);
+    return run_headless_tests(NULL, WIN_W, WIN_H, 0);
 #endif
 }
