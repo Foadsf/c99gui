@@ -67,137 +67,178 @@ jobs:
             echo "version=UNRELEASED" >> $GITHUB_OUTPUT
           fi
 
-  build:
+  # Linux: fully static binaries (musl libc, X11 linked statically) built in Alpine, then
+  # smoke-tested on the runner's own Ubuntu (glibc) to prove they run on a foreign distribution.
+  build-linux:
     needs: detect-mode
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-24.04
             target: linux-x64
-            cc: gcc
-            archive: tar.gz
-            platform_flags: "-lX11"
-          - os: macos-latest
-            target: macos-arm64
-            cc: clang
-            archive: tar.gz
-            platform_flags: "-framework Cocoa -framework CoreGraphics"
-          - os: windows-latest
-            target: windows-x64
-            cc: msvc
-            archive: zip
-            platform_flags: ""
-
-    runs-on: ${{ matrix.os }}
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      PKG: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install X11 (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+      - name: Build static binaries in Alpine
+        run: docker run --rm -v "$PWD":/src -w /src alpine:3.22 sh scripts/build-static-linux.sh build
 
-      - name: Build all four programs (Linux/macOS)
-        if: matrix.cc != 'msvc'
+      - name: Smoke tests on the host distribution
         run: |
-          mkdir -p build
-          FLAGS="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror"
-          
-          # TUI - no graphics libraries
-          ${{ matrix.cc }} $FLAGS src/tui/c99gui.c -o build/c99gui-tui
-          
-          # Pixel GUI
-          ${{ matrix.cc }} $FLAGS src/pixel/gui.c ${{ matrix.platform_flags }} -o build/c99gui-pixel
-          
-          # Vector GUI
-          ${{ matrix.cc }} $FLAGS src/vector/gui.c ${{ matrix.platform_flags }} -o build/c99gui-vector
-          
-          # Suite GUI
-          ${{ matrix.cc }} $FLAGS src/suite/gui.c ${{ matrix.platform_flags }} -o build/c99gui-suite
-          
-          # Copy LICENSE and README
-          cp LICENSE build/
-          cp README.md build/
+          sudo chown -R "$(id -u):$(id -g)" build
+          file build/c99gui-*
+          sh tests/tui_smoke.sh build/c99gui-tui
+          for p in pixel vector suite; do sh tests/smoke.sh build/c99gui-$p; done
 
-      - name: Build all four programs (Windows MSVC)
-        if: matrix.cc == 'msvc'
-        shell: pwsh
+      - name: Package
         run: |
-          # Find Visual Studio installation
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $installPath) {
-            Write-Error "Visual Studio with C++ tools not found"
-            exit 1
-          }
-          
-          # Call vcvarsall.bat to set up environment
-          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
-          cmd.exe /c "call `"$vcvars`" amd64 && set" | ForEach-Object {
-            if ($_ -match '^(.*?)=(.*)$') {
-              [Environment]::SetEnvironmentVariable($matches[1], $matches[2])
-            }
-          }
-          
-          # Verify cl is available
-          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
-            Write-Error "cl.exe not found after running vcvarsall.bat"
-            exit 1
-          }
-          
-          # Build with strict warnings
-          $defs = @()
-          New-Item -ItemType Directory -Force -Path build | Out-Null
-          
-          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 $defs src\tui\c99gui.c /Febuild\c99gui-tui.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\pixel\gui.c /Febuild\c99gui-pixel.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\vector\gui.c /Febuild\c99gui-vector.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\suite\gui.c /Febuild\c99gui-suite.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item LICENSE build\
-          Copy-Item README.md build\
+          mkdir "$PKG"
+          cp build/c99gui-tui build/c99gui-pixel build/c99gui-vector build/c99gui-suite LICENSE README.md "$PKG/"
+          tar czf "$PKG.tar.gz" "$PKG"
 
-      - name: Run smoke tests
-        shell: bash
-        run: |
-          chmod +x tests/smoke.sh tests/tui_smoke.sh
-          sh tests/tui_smoke.sh build/c99gui-tui${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-          sh tests/smoke.sh build/c99gui-pixel${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-          sh tests/smoke.sh build/c99gui-vector${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-          sh tests/smoke.sh build/c99gui-suite${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-
-      - name: Sanitize ref name for artifact naming
-        shell: bash
-        run: |
-          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
-          echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
-
-      - name: Create archive with top-level directory
-        shell: bash
-        run: |
-          mkdir -p "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}"
-          cp -r build/* "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
-          
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.zip" "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
-          else
-            tar czvf "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.tar.gz" "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
-          fi
-
-      - name: Upload artifacts
-        if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
-          path: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}.tar.gz
+          retention-days: 7
+
+  # macOS: one universal binary per program (arm64 + x86_64), linked only against system frameworks.
+  build-macos:
+    needs: detect-mode
+    runs-on: macos-latest
+    env:
+      PKG: c99gui-${{ needs.detect-mode.outputs.version }}-macos-universal
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build universal binaries
+        run: |
+          mkdir -p build
+          FLAGS="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror -arch arm64 -arch x86_64 -mmacosx-version-min=11.0"
+          clang $FLAGS src/tui/c99gui.c -o build/c99gui-tui
+          for p in pixel vector suite; do
+            clang $FLAGS src/$p/gui.c -framework Cocoa -framework CoreGraphics -o build/c99gui-$p
+          done
+
+      - name: Check architectures and dependencies
+        run: |
+          status=0
+          for b in build/c99gui-*; do
+            archs=$(lipo -archs "$b"); echo "$b: $archs"
+            case "$archs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "NOT UNIVERSAL: $b"; status=1 ;; esac
+            # A universal binary prints one "(architecture ...)" header per slice; dependencies are the indented lines
+            deps=$(otool -L "$b" | grep -E '^[[:space:]]' || true)
+            echo "$deps"
+            if echo "$deps" | grep -vE '^[[:space:]]+(/System/Library/|/usr/lib/)'; then echo "NON-SYSTEM DEPENDENCY: $b"; status=1; fi
+          done
+          exit $status
+
+      - name: Smoke tests (arm64 slice)
+        run: |
+          sh tests/tui_smoke.sh build/c99gui-tui
+          for p in pixel vector suite; do sh tests/smoke.sh build/c99gui-$p; done
+
+      - name: Test the x86_64 slice under Rosetta
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            for p in pixel vector suite; do arch -x86_64 build/c99gui-$p --test | tail -1; done
+          else
+            echo "::warning::Rosetta is not available on this runner; the x86_64 slice was built and checked with lipo but not executed"
+          fi
+
+      - name: Package
+        run: |
+          mkdir "$PKG"
+          cp build/c99gui-tui build/c99gui-pixel build/c99gui-vector build/c99gui-suite LICENSE README.md "$PKG/"
+          tar czf "$PKG.tar.gz" "$PKG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}.tar.gz
+          retention-days: 7
+
+  # Windows: MSVC with the static CRT (/MT), so the executables need only system DLLs.
+  build-windows:
+    needs: detect-mode
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-x64
+            vcvars: amd64
+            vctools: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - runner: windows-latest
+            target: windows-x86
+            vcvars: x86
+            vctools: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+          - runner: windows-11-arm
+            target: windows-arm64
+            vcvars: arm64
+            vctools: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+    runs-on: ${{ matrix.runner }}
+    env:
+      PKG: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build with MSVC
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -requires ${{ matrix.vctools }} -property installationPath
+          if (-not $installPath) { Write-Error "Visual Studio with ${{ matrix.vctools }} not found"; exit 1 }
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+          cmd.exe /c "call `"$vcvars`" ${{ matrix.vcvars }} && set" | ForEach-Object {
+            if ($_ -match '^(.*?)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) }
+          }
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) { Write-Error "cl.exe not found"; exit 1 }
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          $srcs = [ordered]@{ tui = 'src\tui\c99gui.c'; pixel = 'src\pixel\gui.c'; vector = 'src\vector\gui.c'; suite = 'src\suite\gui.c' }
+          foreach ($k in $srcs.Keys) {
+            & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 $srcs[$k] /Fobuild\ /Febuild\c99gui-$k.exe
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          # Static CRT: no VC runtime or UCRT DLLs may appear among the dependencies
+          $bad = 0
+          foreach ($k in $srcs.Keys) {
+            $deps = & dumpbin /nologo /dependents "build\c99gui-$k.exe" | Where-Object { $_ -match '\.dll\s*$' } | ForEach-Object { $_.Trim() }
+            Write-Output "c99gui-$k.exe: $($deps -join ', ')"
+            if ($deps | Where-Object { $_ -match '^(vcruntime|msvcp|ucrtbase|api-ms-win-crt)' }) { Write-Output "NON-STATIC CRT: c99gui-$k.exe"; $bad = 1 }
+          }
+          exit $bad
+
+      - name: Smoke tests
+        shell: bash
+        run: |
+          sh tests/tui_smoke.sh build/c99gui-tui.exe
+          for p in pixel vector suite; do sh tests/smoke.sh build/c99gui-$p.exe; done
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PKG | Out-Null
+          Copy-Item build\c99gui-tui.exe, build\c99gui-pixel.exe, build\c99gui-vector.exe, build\c99gui-suite.exe, LICENSE, README.md -Destination $env:PKG
+          Compress-Archive -Path $env:PKG -DestinationPath "$env:PKG.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}.zip
           retention-days: 7
 
   # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release (or shows dry-run summary)
   publish:
-    needs: [detect-mode, build]
+    needs: [detect-mode, build-linux, build-macos, build-windows]
     if: needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
     runs-on: ubuntu-latest
     steps:
