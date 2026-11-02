@@ -75,6 +75,19 @@ check "bad option exit 2"   sh -c "\"$BIN\" --bogus 2>/dev/null; [ \$? -eq 2 ]"
 check "headless simulation" "$BIN" --headless
 check "interactive engine tests" "$BIN" --test
 
+# Negative control 0: below the minimum size the layout checks must report real failures.
+# Exit 1 alone proves nothing (a broken checker can exit 1 unconditionally), so also require FAIL lines.
+NEG_OUT=$(C99GUI_TEST_NEGATIVE=1 "$BIN" --test 2>&1)
+NEG_RC=$?
+NEG_FAILS=$(printf '%s\n' "$NEG_OUT" | grep -c '^FAIL')
+if [ "$NEG_RC" -eq 1 ] && [ "$NEG_FAILS" -ge 5 ]; then
+    pass=$((pass + 1))
+    printf 'ok   negative control: 300x200 layout reports %s real failures\n' "$NEG_FAILS"
+else
+    fail=$((fail + 1))
+    printf 'FAIL negative control: C99GUI_TEST_NEGATIVE=1 gave exit %s with %s FAIL lines (want exit 1, >= 5)\n' "$NEG_RC" "$NEG_FAILS"
+fi
+
 TMP_BMP="/tmp/c99gui_snap_$$.bmp"
 [ -d "/tmp" ] || TMP_BMP="c99gui_snap_$$.bmp"
 check "snapshot BMP export" "$BIN" --snapshot "$TMP_BMP"

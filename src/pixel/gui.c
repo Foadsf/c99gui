@@ -744,9 +744,16 @@ static int run_headless_tests(const char *bmp_output) {
      * Render at a size smaller than minimum (bypassing clamp) and show bounds checks fail */
     if (getenv("C99GUI_TEST_NEGATIVE")) {
         old_w = g_win_w; old_h = g_win_h;
+        int old_tab = ui.tab;
         g_win_w = 300; g_win_h = 200;  /* smaller than minimum, no clamp in headless test */
-        gui_frame();
-        check_all_widget_bounds("negative_300x200");
+        for (int tab = 0; tab < 3; tab++) {
+            ui.tab = tab;
+            gui_frame();
+            char label[32];
+            snprintf(label, sizeof(label), "negative_300x200 tab%d", tab);
+            check_all_widget_bounds(label);
+        }
+        ui.tab = old_tab;
         g_win_w = old_w; g_win_h = old_h;
     }
 
