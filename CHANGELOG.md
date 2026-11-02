@@ -22,17 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pixel GUI**: the window is resizable and maximizable (Win32 `WS_OVERLAPPEDWINDOW`, `WM_SIZE`, `WM_GETMINMAXINFO`; X11 `ConfigureNotify`; Cocoa resizable style). The layout reflows from the live window size with a 640x450 minimum, and the waveform fills the remaining height.
 - **Pixel GUI font**: the hand-drawn glyphs (several malformed, e.g. `T`, `%`, `&`, `g`, `y`, `\`) are replaced by the VGA 8x16 font from Debian console-setup (`Lat15-VGA16.psf.gz`), ASCII 32-126, which console-setup states is public domain.
 - **Pixel GUI tests**: every widget records its rectangle while drawing. Tests click widgets by name and check every rectangle on every tab against the window and its parent panel at 640x450 and 1920x1080. `C99GUI_TEST_NEGATIVE=1` renders at 300x200 and must fail.
-- **`--snapshot FILE --size WxH --tab N`** renders exactly one frame of the requested tab and size.
+- **Vector GUI**: the window is resizable and maximizable (Win32 `WM_SIZE`/`WM_GETMINMAXINFO`; X11 `ConfigureNotify` with min/max size hints; Cocoa reads the live content size each frame, so the layout reflows instead of stretching). Long text fits its card at 640x400; the Synthesizer knobs are drawn as arcs with their values and labels clear of them; Bezier tessellation scales with curve length.
+- **Vector GUI punctuation**: one glyph set for `` ! " # $ & ' * , ; < = > ? @ [ \ ] ^ _ ` { | } ~ ``; the comma was missing and `#`, `$`, `&`, `?`, `@`, brackets, braces and `~` were malformed.
+- **Vector GUI tests**: every widget and every text string records its rectangle (text measured from the glyph box). Tests click by name, assert each state change, check every rectangle against the window and its parent and every pair of siblings for overlap on every tab at 640x400 and 1920x1080, check `vg_sinf` against literal values, and check that every printable ASCII glyph lights pixels. `C99GUI_TEST_NEGATIVE=1` renders every tab at 300x200 and fails on the real bounds failures.
+- **`--snapshot FILE --size WxH --tab N`** renders exactly one frame of the requested tab and size; sizes are clamped to the 640x400 (vector) or 640x450 (pixel) minimum and the 3840x2160 framebuffer.
 - **README**: build commands, CLI options and verification status now match the code.
 
 ### Fixed
 - CI referenced a non-existent `src/gui.c`; it now builds the four real sources.
 - Release notes were extracted empty because of a broken awk regex; extraction now uses a fixed-string match and refuses empty output.
 - A failing MSVC `cl.exe` compile could pass the Windows release job; every compile's exit code is now checked.
+- CI's push trigger only covered `main` and one work branch, so the merged pixel and vector window code had never been compiled for X11 or Cocoa. Running it exposed compile errors (an `NSSize` read as a rect, a test runner called with the wrong arity, a `Rect` type clashing with macOS `MacTypes.h`, signedness, a missing final newline), all fixed.
+- `vg_sinf` (vector) returned sin(0) = 1 and sin(pi/2) = 0, which drew the knobs as hooks and the spline with a kink; the pixel GUI's `fast_sin` returned -cos. Both are now within 0.0011 of sin.
+- Vector X11: resize events were never requested (`StructureNotifyMask`), and resizing would have freed the static framebuffer through `XDestroyImage`.
+- No backend limited the window to the 3840x2160 framebuffer, so a larger window overflowed it; all paths now clamp.
 - Removed documentation claims that the code did not support, such as a "13-stage regression suite", "[78%]" knob readouts and "ACCENT THEME" in the suite. The 2.0.0 and earlier entries below are kept as originally written and contain such claims.
 
 ### Verification limits
-- Cocoa and X11 window behaviour (resize, maximize, input) is compile-checked in CI only; CI runners cannot open windows. Win32 resize and maximize were checked on Windows 11 (window style includes `WS_THICKFRAME` and `WS_MAXIMIZEBOX`; maximize grew the client area from 760x480 to 1536x793).
+- Cocoa and X11 window behaviour (resize, maximize, input) is compile-checked in CI only (GCC and Clang on Linux, Clang on macOS); CI runners cannot open windows, so it has not been exercised on a real X11 or macOS desktop. Win32 resize and maximize were checked on Windows 11 (window style includes `WS_THICKFRAME` and `WS_MAXIMIZEBOX`; maximize grew the client area from 760x480 to 1536x793).
 
 ## [2.0.0] - 2026-11-01 (branch: `vector-suite`)
 
