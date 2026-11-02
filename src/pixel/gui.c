@@ -933,14 +933,14 @@ static int run_cocoa_window(void) {
         }
         NSPoint mp = msg0(NSPoint, win, "mouseLocationOutsideOfEventStream");
         id content_view = msg0(id, win, "contentView");
-        NSSize sz = msg0(NSSize, content_view, "frame").size;
+        NSSize sz = msg0(NSRect, content_view, "frame").size;
         g_win_w = (int)sz.width;
         g_win_h = (int)sz.height;
         ui.mx = (int)mp.x;
         ui.my = g_win_h - (int)mp.y;
 
         gui_frame();
-        CGContextRef ctx = CGBitmapContextCreate(ui.px, g_win_w, g_win_h, 8, g_win_stride * 4, cs,
+        CGContextRef ctx = CGBitmapContextCreate(ui.px, (size_t)g_win_w, (size_t)g_win_h, 8, (size_t)g_win_stride * 4u, cs,
                            (uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaNoneSkipFirst);
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         msg1(void, layer, "setContents:", id, (id)img);
@@ -971,7 +971,7 @@ static int run_x11_window(void) {
     hints->min_width = WIN_W_MIN;
     hints->min_height = WIN_H_MIN;
     
-    Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, g_win_w, g_win_h, 1,
+    Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, (unsigned int)g_win_w, (unsigned int)g_win_h, 1,
                                      BlackPixel(dpy, scr), WhitePixel(dpy, scr));
     XSetWMNormalHints(dpy, win, hints);
     XFree(hints);
@@ -1011,7 +1011,7 @@ static int run_x11_window(void) {
             }
         }
         gui_frame();
-        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, g_win_w, g_win_h);
+        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, (unsigned int)g_win_w, (unsigned int)g_win_h);
         XFlush(dpy);
 
         struct timespec ts = {0, 16000000L};
