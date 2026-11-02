@@ -496,13 +496,21 @@ static void gui_frame(void) {
         draw_rrect(wx, wy, ww, wh, 8, 0xFF11121Du);
         draw_text(wx + 14, wy + 12, "REALTIME SIGNAL WAVEFORM", 0xFF6C7086u);
         record_rect("waveform", wx, wy, ww, wh, PANEL_MAIN);
-        int mid_y = wy + wh / 2;
-        float amp = (float)val_gain * 0.42f;
+        /* Wave spans the canvas below its 24px caption; gain 100 reaches the edges minus 6px */
+        int half_h = (wh - 24) / 2 - 6;
+        int mid_y = wy + 24 + (wh - 24) / 2;
+        float amp = (float)val_gain / 100.0f * (float)half_h;
         float freq = (float)val_freq * 0.0025f;
+        int prev_py = 0;
         for (int i = 12; i < ww - 12; i++) {
             float phase = (float)i * freq + (float)ui.tick * 0.08f;
             int py = mid_y + (int)(fast_sin(phase) * amp);
-            draw_rrect(wx + i, py - 2, 3, 5, 1, ui.accent);
+            if (i == 12) prev_py = py;
+            /* Span from the previous sample so steep slopes stay a continuous line */
+            int top = py < prev_py ? py : prev_py;
+            int bot = py < prev_py ? prev_py : py;
+            draw_rrect(wx + i, top - 2, 3, bot - top + 5, 1, ui.accent);
+            prev_py = py;
         }
     } else if (ui.tab == 1) {
         gui_begin_panel(main_x, 20, main_w, main_h, "DISPLAY AND COLOR ENGINE");
