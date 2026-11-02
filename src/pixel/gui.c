@@ -480,10 +480,6 @@ static void gui_frame(void) {
     int main_h = g_win_h - 40;
     int main_x = 228;
     
-    /* Scale widget spacing based on available height to prevent overflow */
-    float scale_factor = 1.0f;
-    if (main_h < 350) scale_factor = (float)main_h / 350.0f;
-    
     if (ui.tab == 0) {
         gui_begin_panel(main_x, 20, main_w, main_h, "AUDIO AND PIPELINE CONTROLS");
         gui_toggle("HARDWARE V-SYNC LOCK", &opt_vsync);
@@ -491,18 +487,17 @@ static void gui_frame(void) {
         gui_slider("MASTER OUTPUT GAIN", &val_gain, 0, 100);
         gui_slider("MODULATION FREQUENCY", &val_freq, 10, 100);
 
-        /* Real-Time Animated Waveform Canvas - scales with available space */
+        /* Real-Time Animated Waveform Canvas - fills remaining panel height */
         int wx = ui.layout_x, wy = ui.layout_y + 4, ww = ui.layout_w;
         int panel_bottom = 20 + main_h;
-        int max_wh = panel_bottom - wy - 8; /* leave 8px margin */
-        int wh = (int)(135 * scale_factor);
-        if (wh < 80) wh = 80;
-        if (wh > max_wh) wh = max_wh; /* clamp to fit in panel */
+        int max_wh = panel_bottom - wy - 8; /* leave 8px bottom margin */
+        int wh = max_wh; /* fill remaining space */
+        if (wh < 80) wh = 80; /* minimum size clamp */
         draw_rrect(wx, wy, ww, wh, 8, 0xFF11121Du);
         draw_text(wx + 14, wy + 12, "REALTIME SIGNAL WAVEFORM", 0xFF6C7086u);
         record_rect("waveform", wx, wy, ww, wh, PANEL_MAIN);
-        int mid_y = wy + wh / 2 + 10;
-        float amp = (float)val_gain * 0.42f * scale_factor;
+        int mid_y = wy + wh / 2;
+        float amp = (float)val_gain * 0.42f;
         float freq = (float)val_freq * 0.0025f;
         for (int i = 12; i < ww - 12; i++) {
             float phase = (float)i * freq + (float)ui.tick * 0.08f;
@@ -603,10 +598,22 @@ static bool find_rect(const char *name, int *out_x, int *out_y) {
 
 /* Check all recorded rects are inside window and their panel, no sidebar/main overlap */
 static void check_all_widget_bounds(const char *size_label) {
-    /* Panel bounds are known from gui_frame layout */
-    int sidebar_x = 20, sidebar_y = 20, sidebar_w = 190, sidebar_h = g_win_h - 40;
-    int main_x = 228, main_y = 20, main_w = g_win_w - 240, main_h = g_win_h - 40;
+    /* Find panel rects from recorded table */
+    WidgetRect *panel_sidebar = NULL;
+    WidgetRect *panel_main = NULL;
+    for (int i = 0; i < ui_rect_count; i++) {
+        if (strcmp(ui_rects[i].name, "panel_sidebar") == 0) panel_sidebar = &ui_rects[i];
+        if (strcmp(ui_rects[i].name, "panel_main") == 0) panel_main = &ui_rects[i];
+    }
     char msg[128];
+    
+    /* Missing panel rect is a FAIL */
+    snprintf(msg, sizeof(msg), "%s: panel_sidebar recorded", size_label);
+    CHECK(panel_sidebar != NULL, msg);
+    snprintf(msg, sizeof(msg), "%s: panel_main recorded", size_label);
+    CHECK(panel_main != NULL, msg);
+    
+    if (!panel_sidebar || !panel_main) return;
     
     for (int i = 0; i < ui_rect_count; i++) {
         WidgetRect *r = &ui_rects[i];
@@ -615,19 +622,29 @@ static void check_all_widget_bounds(const char *size_label) {
         CHECK(r->x >= 0 && r->y >= 0 && r->x + r->w <= g_win_w && r->y + r->h <= g_win_h, msg);
         
         if (r->panel == PANEL_SIDEBAR) {
-            /* Sidebar panel bounds check */
-            snprintf(msg, sizeof(msg), "%s: %s inside sidebar panel", size_label, r->name);
-            CHECK(r->x >= sidebar_x && r->y >= sidebar_y && r->x + r->w <= sidebar_x + sidebar_w && r->y + r->h <= sidebar_y + sidebar_h, msg);
+            /* Skip parent check for the panel itself */
+            if (r != panel_sidebar) {
+                snprintf(msg, sizeof(msg), "%s: %s inside sidebar panel", size_label, r->name);
+                CHECK(r->x >= panel_sidebar->x && r->y >= panel_sidebar->y && 
+                      r->x + r->w <= panel_sidebar->x + panel_sidebar->w && 
+                      r->y + r->h <= panel_sidebar->y + panel_sidebar->h, msg);
+            }
         } else if (r->panel == PANEL_MAIN) {
-            /* Main panel bounds check */
-            snprintf(msg, sizeof(msg), "%s: %s inside main panel", size_label, r->name);
-            CHECK(r->x >= main_x && r->y >= main_y && r->x + r->w <= main_x + main_w && r->y + r->h <= main_y + main_h, msg);
+            /* Skip parent check for the panel itself */
+            if (r != panel_main) {
+                snprintf(msg, sizeof(msg), "%s: %s inside main panel", size_label, r->name);
+                CHECK(r->x >= panel_main->x && r->y >= panel_main->y && 
+                      r->x + r->w <= panel_main->x + panel_main->w && 
+                      r->y + r->h <= panel_main->y + panel_main->h, msg);
+            }
         }
     }
-    /* No sidebar/main overlap */
+    /* No sidebar/main overlap - use recorded panel rects */
     snprintf(msg, sizeof(msg), "%s: sidebar and main panel do not overlap", size_label);
-    CHECK(sidebar_x + sidebar_w <= main_x || main_x + main_w <= sidebar_x ||
-          sidebar_y + sidebar_h <= main_y || main_y + main_h <= sidebar_y, msg);
+    CHECK(panel_sidebar->x + panel_sidebar->w <= panel_main->x || 
+          panel_main->x + panel_main->w <= panel_sidebar->x ||
+          panel_sidebar->y + panel_sidebar->h <= panel_main->y || 
+          panel_main->y + panel_main->h <= panel_sidebar->y, msg);
 }
 
 /* Headless test suite: honest, continues on failure, exits nonzero on any fail */
@@ -678,17 +695,27 @@ static int run_headless_tests(const char *bmp_output) {
     if (find_rect("swatch2", &cx, &cy)) { ui.mx = cx; ui.my = cy; ui.mouse_pressed = true; gui_frame(); }
     CHECK(ui.accent == 0xFFCBA6F7u, "accent theme swatch selected (purple)");
 
-    /* Test 9: Resize to minimum (640x450) - verify all widgets inside bounds */
+    /* Test 9: Resize to minimum (640x450) - verify all widgets inside bounds for all tabs */
     int old_w = g_win_w, old_h = g_win_h;
     g_win_w = WIN_W_MIN; g_win_h = WIN_H_MIN;
-    gui_frame();
-    check_all_widget_bounds("min_640x450");
+    for (int tab = 0; tab < 3; tab++) {
+        ui.tab = tab;
+        gui_frame();
+        char label[32];
+        snprintf(label, sizeof(label), "min_640x450 tab%d", tab);
+        check_all_widget_bounds(label);
+    }
     g_win_w = old_w; g_win_h = old_h;
 
-    /* Test 10: Resize to large (1920x1080) - verify all widgets inside bounds */
+    /* Test 10: Resize to large (1920x1080) - verify all widgets inside bounds for all tabs */
     g_win_w = 1920; g_win_h = 1080;
-    gui_frame();
-    check_all_widget_bounds("large_1920x1080");
+    for (int tab = 0; tab < 3; tab++) {
+        ui.tab = tab;
+        gui_frame();
+        char label[32];
+        snprintf(label, sizeof(label), "large_1920x1080 tab%d", tab);
+        check_all_widget_bounds(label);
+    }
     g_win_w = old_w; g_win_h = old_h;
 
     /* Test 11: Negative control (only runs when C99GUI_TEST_NEGATIVE=1)
