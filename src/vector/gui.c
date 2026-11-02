@@ -90,11 +90,13 @@ static float vg_sqrtf(float x) {
 }
 
 static float vg_sinf(float x) {
+    /* Wrap to [-0.5, 0.5) turns, then parabolic sine with one refinement (max error ~0.0011) */
     x *= 0.15915494f;
     x -= (float)(int)x;
-    if (x < 0.0f) x += 1.0f;
-    float y = (x < 0.5f) ? (x * 4.0f - 1.0f) : (3.0f - x * 4.0f);
-    return y * (1.225f * (y * vg_absf(y) - y) + y);
+    if (x < -0.5f) x += 1.0f;
+    else if (x >= 0.5f) x -= 1.0f;
+    float y = 8.0f * x - 16.0f * x * vg_absf(x);
+    return 0.225f * (y * vg_absf(y) - y) + y;
 }
 
 static float vg_cosf(float x) { return vg_sinf(x + 1.57079632f); }
@@ -444,7 +446,31 @@ static const char *vg_glyph_path(char c, float *adv) {
         case '-': *adv = 8.0f; return "M16L66";
         case '+': *adv = 9.0f; return "M16L76M43L49";
         case '/': *adv = 8.0f; return "M1CL70";
-        case '%': *adv = 11.5f; return "M1CL70M10Q0002Q2220Q0010M7AQ6A6CQ8C8AQ6A7A";
+                case '%': *adv = 11.5f; return "M1CL70M10Q0002Q2220Q0010M7AQ6A6CQ8C8AQ6A7A";
+        case '!': *adv = 7.0f; return "M34L38M3AL3B";
+        case '"': *adv = 8.0f; return "M24L26M64L66";
+        case '#': *adv = 10.5f; return "M12L72M30L80M04L5CM44L0C";
+        case '$': *adv = 10.5f; return "M40Q4C2CQ2C20Q2040Q404CQ4C2C";
+        case '&': *adv = 10.5f; return "M78Q7C3CQ3C08Q0407L74L70";
+        case '\'': *adv = 4.0f; return "M34L36";
+        case '*': *adv = 9.0f; return "M44L48M26L6A";
+        case ',': *adv = 5.0f; return "M3AL3BQ3C2C";
+        case ';': *adv = 5.0f; return "M34L36M3AL3BQ3C2C";
+        case '<': *adv = 10.0f; return "M74L38L7C";
+        case '=': *adv = 10.0f; return "M04L84M08L88";
+        case '>': *adv = 10.0f; return "M14L38L1C";
+        case '?': *adv = 9.5f; return "M40Q4878Q7C6CQ6C4CM48L4A";
+        case '@': *adv = 12.0f; return "M48Q4C7CQ7C88Q8880Q8040Q4000Q0008Q0840Q4848";
+        case '[': *adv = 6.5f; return "M10L1CL80L8C";
+        case '\\': *adv = 6.5f; return "M70L0C";
+        case ']': *adv = 6.5f; return "M60L6CL80L8C";
+        case '^': *adv = 8.0f; return "M04L40L84";
+        case '_': *adv = 8.0f; return "M0CL8C";
+        case '`': *adv = 5.0f; return "M34L26";
+        case '{': *adv = 8.0f; return "M40Q1010Q1030Q4040Q7030Q7010Q4000";
+        case '|': *adv = 4.0f; return "M10L1C";
+        case '}': *adv = 8.0f; return "M40Q7010Q7030Q4040Q1030Q1010Q4000";
+        case '~': *adv = 10.0f; return "M06Q4484Q8440";
         case '(': *adv = 6.5f; return "M40Q164C";
         case ')': *adv = 6.5f; return "M10Q461C";
         default:  *adv = 5.5f; return "";
@@ -908,6 +934,51 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
             printf("ok   resize honesty test at %dx%d (all %d rects inside window & parent)\n", tw, th, ui.rect_count);
             passed++;
         }
+    }
+
+    /* vg_sinf correctness CHECKs */
+    if (vg_absf(vg_sinf(0.0f) - 0.0f) <= 0.005f &&
+        vg_absf(vg_sinf(0.5235988f) - 0.5f) <= 0.005f &&
+        vg_absf(vg_sinf(1.5707963f) - 1.0f) <= 0.005f &&
+        vg_absf(vg_sinf(3.1415927f) - 0.0f) <= 0.005f &&
+        vg_absf(vg_sinf(4.712389f) - (-1.0f)) <= 0.005f &&
+        vg_absf(vg_sinf(-1.5707963f) - (-1.0f)) <= 0.005f &&
+        vg_absf(vg_sinf(7.5f) - 0.938f) <= 0.005f) {
+        printf("ok   vg_sinf accuracy check passed\n");
+        passed++;
+    } else {
+        fprintf(stderr, "FAIL: vg_sinf accuracy check failed\n");
+        failed++;
+    }
+
+    /* Glyph coverage test: every printable ASCII 33-126 lights at least one pixel */
+    int glyph_ok = 0, glyph_fail = 0;
+    for (int c = 33; c <= 126; c++) {
+        /* Clear a small test buffer */
+        for (int i = 0; i < 64 * 64; i++) ui.px[i] = 0;
+        int test_w = 64, test_h = 64;
+        ui.w = test_w; ui.h = test_h;
+        ui.scale = 1.0f;
+        /* Draw the glyph at a known position */
+        vg_text(10.0f, 32.0f, 24.0f, (const char[]){(char)c, 0}, 0xFFFFFFFFu);
+        /* Check if any pixel lit */
+        bool lit = false;
+        for (int y = 0; y < test_h && !lit; y++) {
+            for (int x = 0; x < test_w && !lit; x++) {
+                if (ui.px[y * test_w + x] != 0) lit = true;
+            }
+        }
+        if (lit) glyph_ok++;
+        else {
+            fprintf(stderr, "FAIL: glyph '%c' (0x%02X) lights no pixels\n", c, c);
+            glyph_fail++;
+        }
+    }
+    if (glyph_fail == 0) {
+        printf("ok   glyph coverage test: %d/94 printable ASCII chars render\n", glyph_ok);
+        passed++;
+    } else {
+        failed += glyph_fail;
     }
 
     /* Standard interactive tests at default size */
