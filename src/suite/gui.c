@@ -256,6 +256,9 @@ typedef struct {
     Rect rects[512];
     int rect_count;
     int current_parent;
+    int parent_stack[16];
+    int parent_depth;
+    float col_row_h;
     int test_negative_mode;
     int test_passed;
     int test_failed;
@@ -275,22 +278,34 @@ static GuiCtx ui;
     } \
 } while (0)
 
-static void record_rect(const char *name, int x, int y, int w, int h, int parent_id) {
+/* Record one rect; returns its index, or -1 when not recorded (invisible or full). */
+static int record_rect(const char *name, int x, int y, int w, int h, int parent_id) {
     /* Only record rects that intersect the current clip region (visible widgets) */
     /* Exception: in negative test mode, record all rects to detect bounds failures */
     if (!ui.test_negative_mode && (x + w <= ui.clip.x0 || x >= ui.clip.x1 || y + h <= ui.clip.y0 || y >= ui.clip.y1)) {
-        return; /* Outside clip region, not visible */
+        return -1; /* Outside clip region, not visible */
     }
-    if (ui.rect_count < 512) {
-        strncpy(ui.rects[ui.rect_count].name, name, 63);
-        ui.rects[ui.rect_count].name[63] = '\0';
-        ui.rects[ui.rect_count].x = x;
-        ui.rects[ui.rect_count].y = y;
-        ui.rects[ui.rect_count].w = w;
-        ui.rects[ui.rect_count].h = h;
-        ui.rects[ui.rect_count].parent_id = parent_id;
-        ui.rect_count++;
-    }
+    if (ui.rect_count >= 512) return -1;
+    strncpy(ui.rects[ui.rect_count].name, name, 63);
+    ui.rects[ui.rect_count].name[63] = '\0';
+    ui.rects[ui.rect_count].x = x;
+    ui.rects[ui.rect_count].y = y;
+    ui.rects[ui.rect_count].w = w;
+    ui.rects[ui.rect_count].h = h;
+    ui.rects[ui.rect_count].parent_id = parent_id;
+    ui.rect_count++;
+    return ui.rect_count - 1;
+}
+
+/* Parent tracking for sibling-overlap checks: children drawn between push/pop
+ * get the pushed rect index as their parent. */
+static void ui_push_parent(int idx) {
+    if (ui.parent_depth < 16) ui.parent_stack[ui.parent_depth++] = ui.current_parent;
+    if (idx >= 0) ui.current_parent = idx;
+}
+
+static void ui_pop_parent(void) {
+    if (ui.parent_depth > 0) ui.current_parent = ui.parent_stack[--ui.parent_depth];
 }
 
 static float vg_text_width(const char *s, float size);
@@ -710,12 +725,6 @@ static void vg_text(float x, float y, float size, const char *s, uint32_t col) {
     }
 }
 
-
-
-
-
-
-
 /* =========================================================================
  * 5. IMMEDIATE-MODE LAYOUT, CONTAINERS & WIDGET SUITE
  * ========================================================================= */
@@ -746,6 +755,7 @@ static void ui_columns(int count) {
 
 static void ui_next_column(float row_h) {
     float gap = 12.0f * ui.scale;
+    ui.col_row_h = row_h;
     ui.col_idx = (ui.col_idx + 1) % ui.col_count;
     if (ui.col_idx == 0) {
         ui.lx = ui.col_x;
@@ -756,19 +766,22 @@ static void ui_next_column(float row_h) {
 }
 
 static void ui_end_columns(void) {
+    /* A dangling last column (odd item count) has rewound ui.ly; advance past it
+     * so following content never overlaps the last row. */
+    if (ui.col_idx != 0) ui.ly += ui.col_row_h;
     ui.lx = ui.col_x;
     ui.lw = ui.col_w;
     ui.col_count = 1;
     ui.col_idx = 0;
 }
 
-static void ui_card(float x, float y, float w, float h, float r) {
-    record_rect("card", (int)x, (int)y, (int)w, (int)h, -1);
-    // ui.current_parent = ui.rect_count - 1;  // Keep parent as card for bounds checking
+static int ui_card(float x, float y, float w, float h, float r) {
+    int self = record_rect("card", (int)x, (int)y, (int)w, (int)h, -1);
     vg_shadow_rrect(x, y + 4.0f * ui.scale, w, h, r, 14.0f * ui.scale,
                     ui.light_mode ? 0x22000000u : 0x58000000u);
     vg_fill_rrect(x, y, w, h, r, ui.pal.bg_card);
     vg_stroke_rrect(x, y, w, h, r, 1.1f, ui.pal.border);
+    return self;
 }
 
 static void ui_section(const char *title) {
@@ -788,8 +801,10 @@ static void ui_begin_scroll(float x, float y, float w, float h, float *scroll_y,
 
     vg_push_clip(x, y, w, h);
     /* Record scroll viewport as a rect for honest bounds checking */
-    record_rect("scroll_viewport", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    ui.current_parent = ui.rect_count - 1;
+    {
+        int vp = record_rect("scroll_viewport", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+        ui_push_parent(vp);
+    }
     ui.lx = x + 18.0f * ui.scale;
     ui.ly = y + 16.0f * ui.scale - *scroll_y;
     ui.lw = w - 42.0f * ui.scale;
@@ -805,10 +820,7 @@ static void ui_begin_scroll(float x, float y, float w, float h, float *scroll_y,
 
 static void ui_end_scroll(void) {
     vg_pop_clip();
-    /* Restore parent to scroll viewport's parent (the card) */
-    if (ui.current_parent >= 0 && ui.current_parent < ui.rect_count) {
-        ui.current_parent = ui.rects[ui.current_parent].parent_id;
-    }
+    ui_pop_parent(); /* restore parent pushed by ui_begin_scroll */
 }
 
 static void ui_toast(const char *msg) {
@@ -819,9 +831,10 @@ static void ui_toast(const char *msg) {
 static void ui_toggle(const char *label, bool *state, const char *tip) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 36.0f * ui.scale;
-    record_rect("toggle", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "toggle:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
     if (hover) { ui.hot_id = id; if (tip) ui.tooltip_text = tip; }
     if (hover && ui.mouse_pressed) *state = !(*state);
@@ -830,15 +843,17 @@ static void ui_toggle(const char *label, bool *state, const char *tip) {
     vg_fill_rrect(x, y, w, h, 8.0f * ui.scale, hover ? ui.pal.bg_hover : ui.pal.bg_elem);
     vg_stroke_rrect(x, y, w, h, 8.0f * ui.scale, 1.0f, ui.pal.border);
     vg_text(x + 12.0f * ui.scale, y + 11.5f * ui.scale, 12.5f * ui.scale, label, ui.pal.text_main);
-    ui.current_parent = widget_parent;
 
     float pw = 38.0f * ui.scale, ph = 20.0f * ui.scale;
     float px = x + w - pw - 10.0f * ui.scale, py = y + (h - ph) * 0.5f;
+    /* Record the pill so the sibling check catches it sitting on the label */
+    record_rect("toggle_pill", (int)px, (int)py, (int)pw, (int)ph, ui.current_parent);
     uint32_t pill = color_lerp(ui.pal.border, ui.accent, t);
     vg_fill_rrect(px, py, pw, ph, ph * 0.5f, pill);
     float r = (ph - 5.0f * ui.scale) * 0.5f;
     float kx = vg_lerpf(px + r + 2.5f * ui.scale, px + pw - r - 2.5f * ui.scale, t);
     vg_fill_circle(kx, py + ph * 0.5f, r, 0xFFFFFFFFu);
+    ui_pop_parent();
 
     ui.ly += h + 8.0f * ui.scale;
     if (ui.col_count > 1) ui_next_column(h + 8.0f * ui.scale);
@@ -848,9 +863,10 @@ static void ui_toggle(const char *label, bool *state, const char *tip) {
 static void ui_checkbox(const char *label, bool *checked) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 34.0f * ui.scale;
-    record_rect("checkbox", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "checkbox:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
     if (hover) ui.hot_id = id;
     if (hover && ui.mouse_pressed) *checked = !(*checked);
@@ -868,7 +884,7 @@ static void ui_checkbox(const char *label, bool *checked) {
         vg_stroke(2.1f * ui.scale, 0xFF11121Cu);
     }
     vg_text(bx + 30.0f * ui.scale, y + 10.5f * ui.scale, 12.5f * ui.scale, label, ui.pal.text_main);
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
     ui.ly += h + 6.0f * ui.scale;
     if (ui.col_count > 1) ui_next_column(h + 6.0f * ui.scale);
 }
@@ -877,9 +893,10 @@ static void ui_checkbox(const char *label, bool *checked) {
 static void ui_radio(const char *label, int *group_val, int my_val) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 32.0f * ui.scale;
-    record_rect("radio", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "radio:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
     if (hover) ui.hot_id = id;
     if (hover && ui.mouse_pressed) *group_val = my_val;
@@ -892,7 +909,7 @@ static void ui_radio(const char *label, int *group_val, int my_val) {
     if (t > 0.05f) vg_fill_circle(cx, cy, r * 0.52f * t, ui.accent);
 
     vg_text(x + 32.0f * ui.scale, y + 9.5f * ui.scale, 12.5f * ui.scale, label, ui.pal.text_main);
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
     ui.ly += h + 6.0f * ui.scale;
     if (ui.col_count > 1) ui_next_column(h + 6.0f * ui.scale);
 }
@@ -901,9 +918,10 @@ static void ui_radio(const char *label, int *group_val, int my_val) {
 static void ui_slider(const char *label, float *val, float min_v, float max_v, const char *suffix) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 48.0f * ui.scale;
-    record_rect("slider", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "slider:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     float tx = x + 12.0f * ui.scale, ty = y + 33.0f * ui.scale, tw = w - 24.0f * ui.scale;
 
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
@@ -922,7 +940,7 @@ static void ui_slider(const char *label, float *val, float min_v, float max_v, c
     str_from_int(num, (int)(*val + 0.5f), suffix);
     float nw = vg_text_width(num, 12.5f * ui.scale);
     vg_text(x + w - nw - 12.0f * ui.scale, y + 8.5f * ui.scale, 12.5f * ui.scale, num, ui.accent);
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
 
     float th = 5.5f * ui.scale;
     vg_fill_rrect(tx, ty - th * 0.5f, tw, th, th * 0.5f, ui.pal.border);
@@ -938,9 +956,10 @@ static void ui_slider(const char *label, float *val, float min_v, float max_v, c
 /* 5. Vector Rotary Knob (Drag Vertically or Scroll Wheel) */
 static void ui_knob(float cx, float cy, float r, const char *label, float *val, float min_v, float max_v) {
     int id = ui_id();
-    record_rect("knob", (int)(cx - r - 8.0f), (int)(cy - r - 8.0f), (int)(r * 2.0f + 16.0f), (int)(r * 2.0f + 28.0f), ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "knob:%s", label);
+    int self = record_rect(rname, (int)(cx - r - 8.0f), (int)(cy - r - 8.0f), (int)(r * 2.0f + 16.0f), (int)(r * 2.0f + 28.0f), ui.current_parent);
+    ui_push_parent(self);
     bool hover = !ui.modal_open && hit_box(cx - r - 8.0f, cy - r - 8.0f, r * 2.0f + 16.0f, r * 2.0f + 28.0f);
     if (hover) {
         ui.hot_id = id;
@@ -971,14 +990,17 @@ static void ui_knob(float cx, float cy, float r, const char *label, float *val, 
 
     float lw = vg_text_width(label, 11.5f * ui.scale);
     vg_text(cx - lw * 0.5f, cy + r + 8.0f * ui.scale, 11.5f * ui.scale, label, ui.pal.text_muted);
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
 }
 
 /* 6. Single-Line Interactive Text Input Box */
 static void ui_textbox(const char *label, char *buf, int max_len) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 38.0f * ui.scale;
-    record_rect("textbox", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    char rname[64];
+    snprintf(rname, sizeof(rname), "textbox:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
     if (hover && ui.mouse_pressed) ui.focus_id = id;
     else if (!hover && ui.mouse_pressed && ui.focus_id == id) ui.focus_id = 0;
@@ -1009,6 +1031,7 @@ static void ui_textbox(const char *label, char *buf, int max_len) {
         vg_fill_rrect(tx + cw + 2.0f * ui.scale, y + 9.0f * ui.scale, 2.0f * ui.scale, h - 18.0f * ui.scale, 1.0f, ui.accent);
     }
     vg_pop_clip();
+    ui_pop_parent();
 
     ui.ly += h + 8.0f * ui.scale;
 }
@@ -1017,9 +1040,10 @@ static void ui_textbox(const char *label, char *buf, int max_len) {
 static void ui_dropdown(const char *label, const char **items, int count, int *selected) {
     int id = ui_id();
     float x = ui.lx, y = ui.ly, w = ui.lw, h = 38.0f * ui.scale;
-    record_rect("dropdown", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "dropdown:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
     float lw = vg_text_width(label, 12.5f * ui.scale) + 16.0f * ui.scale;
     vg_text(x, y + 12.0f * ui.scale, 12.5f * ui.scale, label, ui.pal.text_main);
 
@@ -1046,7 +1070,7 @@ static void ui_dropdown(const char *label, const char **items, int count, int *s
         ui.dd_x = bx; ui.dd_y = y + h + 4.0f * ui.scale; ui.dd_w = bw;
         ui.dd_items = items; ui.dd_count = count; ui.dd_selected = selected;
     }
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
     ui.ly += h + 8.0f * ui.scale;
 }
 
@@ -1056,9 +1080,10 @@ static bool ui_button(const char *label, bool primary) {
     float s = 12.5f * ui.scale;
     float w = (ui.col_count > 1) ? ui.lw : (vg_text_width(label, s) + 34.0f * ui.scale);
     float h = 36.0f * ui.scale, x = ui.lx, y = ui.ly;
-    record_rect("button", (int)x, (int)y, (int)w, (int)h, ui.current_parent);
-    int widget_parent = ui.current_parent;
-    ui.current_parent = ui.rect_count - 1;
+    char rname[64];
+    snprintf(rname, sizeof(rname), "button:%s", label);
+    int self = record_rect(rname, (int)x, (int)y, (int)w, (int)h, ui.current_parent);
+    ui_push_parent(self);
 
     bool hover = !ui.modal_open && ui.open_dropdown_id == 0 && hit_box(x, y, w, h);
     if (hover) ui.hot_id = id;
@@ -1072,7 +1097,7 @@ static bool ui_button(const char *label, bool primary) {
     float tw = vg_text_width(label, s);
     vg_text(x + (w - tw) * 0.5f, y + 11.5f * ui.scale, s, label, fg);
 
-    ui.current_parent = widget_parent;
+    ui_pop_parent();
     ui.ly += h + 8.0f * ui.scale;
     if (ui.col_count > 1) ui_next_column(h + 8.0f * ui.scale);
     return clicked;
