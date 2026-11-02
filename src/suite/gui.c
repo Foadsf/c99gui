@@ -1387,7 +1387,7 @@ static void gui_frame(void) {
         ui_textbox("Project Name:", txt_name, (int)sizeof(txt_name));
         ui_dropdown("Audio Routing:", profiles, 4, &dd_profile);
 
-        ui_section("MULTI-COLUMN SWITCHES, CHECKBOXES SWITCHES, CHECKBOXES & RADIOS RADIOS");
+        ui_section("SWITCHES, CHECKBOXES & RADIOS");
         ui_toggle("Sub-Pixel AA", &chk_aa, "Toggle analytical signed-distance anti-aliasing");
         ui_toggle("V-Sync Lock", &chk_vsync, "Lock presentation to 60Hz display refresh");
         ui_checkbox("SIMD Vectorization", &chk_simd);
@@ -1942,7 +1942,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
     /* Font Glyph Verification: every printable ASCII 33-126 must light at least one pixel */
     {
-        ui_set_size(980, 200);
+        ui.w = 980;
+        ui.h = 200;
         app_tab = 0;
         gui_frame();
         int glyph_failures = 0;
@@ -1984,7 +1985,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     /* Negative test mode: run every tab at 300x200 (below minimum), verify bounds failures are reported */
     if (getenv("C99GUI_TEST_NEGATIVE")) {
         ui.test_negative_mode = 1;
-        ui_set_size(300, 200);
+        ui.w = 300;
+        ui.h = 200;
         ui.toast_timer = 0;
         int negative_failures = 0;
         for (int tab = 0; tab < 5; tab++) {
