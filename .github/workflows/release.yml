@@ -239,6 +239,9 @@ jobs:
   # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release (or shows dry-run summary)
   publish:
     needs: [detect-mode, build-linux, build-macos, build-windows]
+    # The repository's default GITHUB_TOKEN is read-only; only this job may create the release
+    permissions:
+      contents: write
     if: needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
     runs-on: ubuntu-latest
     steps:
