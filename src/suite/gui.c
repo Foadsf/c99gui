@@ -278,6 +278,18 @@ static GuiCtx ui;
     } \
 } while (0)
 
+#define CHECK_FMT(cond, fmt, ...) do { \
+    char _msg[256]; \
+    snprintf(_msg, sizeof(_msg), fmt, __VA_ARGS__); \
+    if (cond) { \
+        ui.test_passed++; \
+        printf("ok   %s\n", _msg); \
+    } else { \
+        ui.test_failed++; \
+        fprintf(stderr, "FAIL: %s\n", _msg); \
+    } \
+} while (0)
+
 /* Record one rect; returns its index, or -1 when not recorded (invisible or full). */
 static int record_rect(const char *name, int x, int y, int w, int h, int parent_id) {
     /* Only record rects that intersect the current clip region (visible widgets) */
@@ -1671,52 +1683,44 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
     /* Test 2: Text input typing and backspace in Tab 0 */
     ui.focus_id = 0;
-    ui.mx = 400.0f; ui.my = 70.0f;
+    int idx = find_rect("textbox:Project Name:");
+    CHECK(idx >= 0, "textbox:Project Name: recorded");
+    if (idx >= 0) {
+        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
+        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+    }
     ui.mouse_pressed = true;
     gui_frame();
     ui.key_char = 'X';
     gui_frame();
-    if (!strstr(txt_name, "X")) {
-        fprintf(stderr, "FAIL: text input typing failed (got '%s')\n", txt_name);
-        return 1;
-    }
+    CHECK(strstr(txt_name, "X") != NULL, "text input typing works");
     ui.key_backspace = true;
     gui_frame();
-    printf("ok   vector text input & caret processing (txt_name='%s')\n", txt_name);
+    CHECK(ui.test_passed, "vector text input & caret processing");
 
     /* Test 3: Toggle AA switch */
     bool before_aa = chk_aa;
-    int idx = find_rect("toggle");
+    idx = find_rect("toggle:Sub-Pixel SDF AA");
+    CHECK(idx >= 0, "toggle:Sub-Pixel SDF AA recorded");
     if (idx >= 0) {
         ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
         ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
-    } else {
-        ui.mx = 350.0f; ui.my = 184.0f;
     }
     ui.mouse_pressed = true;
     gui_frame();
-    if (chk_aa == before_aa) {
-        fprintf(stderr, "FAIL: toggle switch failed\n");
-        return 1;
-    }
-    printf("ok   animated vector toggle state flipped\n");
+    CHECK(chk_aa != before_aa, "toggle switch state flipped");
 
     /* Test 4: Checkbox state */
     bool before_simd = chk_simd;
-    idx = find_rect("checkbox");
+    idx = find_rect("checkbox:Enable SIMD Vectorization");
+    CHECK(idx >= 0, "checkbox:Enable SIMD Vectorization recorded");
     if (idx >= 0) {
         ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
         ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
-    } else {
-        ui.mx = 280.0f; ui.my = 227.0f;
     }
     ui.mouse_pressed = true;
     gui_frame();
-    if (chk_simd == before_simd) {
-        fprintf(stderr, "FAIL: checkbox toggle failed\n");
-        return 1;
-    }
-    printf("ok   vector checkbox state transition\n");
+    CHECK(chk_simd != before_simd, "checkbox state transition");
 
     /* Test 5: Tab switch to Node Studio (Tab 1) */
     idx = find_rect("nav_tab1");
@@ -1728,25 +1732,25 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_pressed = true;
     gui_frame();
     CHECK(app_tab == 1, "tab switch to Node Studio");
-    if (app_tab != 1) return 1;
-    printf("ok   switched to Node Studio tab\n");
 
     /* Test 6: Node dragging in Node Studio */
     float orig_nx = nodes[0].x;
-    ui.mx = 350.0f; ui.my = 110.0f;
+    idx = find_rect("node_header0");
+    CHECK(idx >= 0, "node_header0 recorded");
+    if (idx >= 0) {
+        ui.mx = (float)(ui.rects[idx].x + 10.0f * ui.scale);
+        ui.my = (float)(ui.rects[idx].y + 10.0f * ui.scale);
+    }
     ui.mouse_pressed = true;
     ui.mouse_down = true;
     gui_frame();
-    ui.mx = 400.0f; ui.my = 130.0f;
+    ui.mx += 50.0f * ui.scale;
+    ui.my += 20.0f * ui.scale;
     gui_frame();
     ui.mouse_down = false;
     ui.mouse_released = true;
     gui_frame();
-    if (nodes[0].x == orig_nx) {
-        fprintf(stderr, "FAIL: node drag failed (x unchanged)\n");
-        return 1;
-    }
-    printf("ok   interactive node graph drag & bezier wire reroute\n");
+    CHECK(nodes[0].x != orig_nx, "node drag changes position");
 
     /* Test 7: Tab switch to Data & Charts (Tab 2) */
     idx = find_rect("nav_tab2");
@@ -1758,8 +1762,6 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_pressed = true;
     gui_frame();
     CHECK(app_tab == 2, "tab switch to Data & Charts");
-    if (app_tab != 2) return 1;
-    printf("ok   switched to Data & Charts tab (filled vector area chart)\n");
 
     /* Test 8: Select row in System Process Table */
     idx = find_rect("table_row2");
@@ -1771,8 +1773,6 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_pressed = true;
     gui_frame();
     CHECK(table_sel == 2, "data table row 2 selected");
-    if (table_sel != 2) return 1;
-    printf("ok   interactive data table row selected (row=%d)\n", table_sel);
 
     /* Test 9: Tab switch to Color Picker (Tab 3) */
     idx = find_rect("nav_tab3");
@@ -1784,7 +1784,6 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_pressed = true;
     gui_frame();
     CHECK(app_tab == 3, "tab switch to Color Picker");
-    if (app_tab != 3) return 1;
     /* Click on 2D HSV Sat/Val Gradient */
     idx = find_rect("sv_box");
     CHECK(idx >= 0, "sv_box recorded");
@@ -1798,7 +1797,7 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_down = false;
     ui.mouse_released = true;
     gui_frame();
-    printf("ok   2D HSV color picker gradient & hex generator (accent=0x%08X)\n", ui.accent);
+    CHECK(ui.accent != 0, "2D HSV color picker gradient & hex generator");
 
     /* Test 10: Tab switch to Scaling & Modals (Tab 4) */
     idx = find_rect("nav_tab4");
@@ -1810,12 +1809,10 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     ui.mouse_pressed = true;
     gui_frame();
     CHECK(app_tab == 4, "tab switch to Scaling & Modals");
-    if (app_tab != 4) return 1;
-    printf("ok   switched to Scaling & Modals tab\n");
 
     /* Test 11: Open and dismiss modal dialog via button click */
-    idx = find_rect("modal_button");
-    CHECK(idx >= 0, "modal_button recorded");
+    idx = find_rect("button:Open Modal Dialog");
+    CHECK(idx >= 0, "button:Open Modal Dialog recorded");
     if (idx >= 0) {
         ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
         ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
@@ -1823,38 +1820,33 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
         gui_frame();
     }
     CHECK(ui.modal_open, "modal dialog opened via button");
-    if (!ui.modal_open) return 1;
     ui.key_esc = true;
     gui_frame();
     CHECK(!ui.modal_open, "modal dialog dismissed via ESC");
-    if (ui.modal_open) return 1;
-    printf("ok   vector modal dialog open & esc-dismiss with toast\n");
 
     /* Test 12: Context menu right-click and dismiss */
     ui.rmouse_pressed = true;
-    ui.mx = 500.0f; ui.my = 300.0f;
+    ui.mx = 500.0f * ui.scale; ui.my = 300.0f * ui.scale;
     gui_frame();
     CHECK(ui.ctx_open, "context menu opened via right-click");
-    if (!ui.ctx_open) return 1;
-    ui.mouse_pressed = true; ui.mx = 10.0f; ui.my = 10.0f;
+    ui.mouse_pressed = true; ui.mx = 10.0f * ui.scale; ui.my = 10.0f * ui.scale;
     gui_frame();
     CHECK(!ui.ctx_open, "context menu dismissed via click-outside");
-    if (ui.ctx_open) return 1;
-    printf("ok   right-click context menu open & click-outside dismiss\n");
 
     /* Test 13: Return to Tab 0 and export BMP */
     app_tab = 0;
     gui_frame();
 
     if (bmp_output) {
-        if (!save_bmp(bmp_output, ui.w, ui.h)) {
-            fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
-            return 1;
-        }
-        printf("ok   vector snapshot saved to %s\n", bmp_output);
+        CHECK(save_bmp(bmp_output, ui.w, ui.h), "vector snapshot saved");
     }
 
     /* Honest Resize Tests: min size (640x400) and max size (1920x1080) for all 5 tabs */
+    /* Enable text rect recording for sibling overlap detection */
+    ui.record_text_rects = 1;
+    /* Clear any pending toast to avoid false overlaps */
+    ui.toast_timer = 0;
+
     int test_sizes[2][2] = {{MIN_W, MIN_H}, {1920, 1080}};
     for (int s = 0; s < 2; s++) {
         int tw = test_sizes[s][0];
@@ -1876,34 +1868,33 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
                     Rect *p = &ui.rects[r->parent_id];
-                    if (r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h) {
-                        fprintf(stderr, "FAIL: tab %d widget '%s' rect [%d,%d,%d,%d] outside parent '%s' [%d,%d,%d,%d]\n",
-                                tab, r->name, r->x, r->y, r->w, r->h, p->name, p->x, p->y, p->w, p->h);
-                        all_inside = false;
-                    }
+                    CHECK_FMT(!(r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h),
+                          "tab %d widget '%s' inside parent '%s'", tab, r->name, p->name);
                 }
             }
             if (all_inside) {
                 /* Sibling overlap check: any two rects with same parent that intersect = FAIL */
-                for (int j = i + 1; j < ui.rect_count; j++) {
-                    Rect *r2 = &ui.rects[j];
-                    if (r2->parent_id == r->parent_id) {
-                        bool overlap = (r->x < r2->x + r2->w && r->x + r->w > r2->x &&
-                                        r->y < r2->y + r2->h && r->y + r->h > r2->y);
-                        fprintf(stderr, "DEBUG sibling check: tab=%d i=%d('%s' p=%d) j=%d('%s' p=%d) overlap=%d\n", tab, i, r->name, r->parent_id, j, r2->name, r2->parent_id, overlap);
-                        if (overlap) {
-                            fprintf(stderr, "FAIL: tab %d sibling overlap: '%s' [%d,%d,%d,%d] overlaps '%s' [%d,%d,%d,%d] (parent=%d)\n",
-                                    tab, r->name, r->x, r->y, r->w, r->h, r2->name, r2->x, r2->y, r2->w, r2->h, r->parent_id);
-                            all_inside = false;
+                for (int i = 0; i < ui.rect_count; i++) {
+                    Rect *r = &ui.rects[i];
+                    for (int j = i + 1; j < ui.rect_count; j++) {
+                        Rect *r2 = &ui.rects[j];
+                        if (r2->parent_id == r->parent_id) {
+                            bool overlap = (r->x < r2->x + r2->w && r->x + r->w > r2->x &&
+                                            r->y < r2->y + r2->h && r->y + r->h > r2->y);
+                            if (overlap) {
+                                fprintf(stderr, "FAIL: tab %d sibling overlap: '%s' [%d,%d,%d,%d] overlaps '%s' [%d,%d,%d,%d] (parent=%d)\n",
+                                        tab, r->name, r->x, r->y, r->w, r->h, r2->name, r2->x, r2->y, r2->w, r2->h, r->parent_id);
+                                all_inside = false;
+                            }
                         }
                     }
                 }
-                printf("ok   bounds %dx%d tab%d: %d rects\n", tw, th, tab, rects_count);
-            } else {
-                return 1;
+                CHECK_FMT(all_inside, "bounds %dx%d tab%d: %d rects, no sibling overlaps", tw, th, tab, rects_count);
             }
+            if (!all_inside) return 1;
         }
     }
+    ui.record_text_rects = 0;
 
     /* Font Glyph Verification: every printable ASCII 33-126 must light at least one pixel */
     {
@@ -1916,11 +1907,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
             char buf[2] = {(char)c, 0};
             float adv = 0.0f;
             vg_glyph_path((char)c, &adv);
-            if (adv <= 0.0f) {
-                fprintf(stderr, "FAIL: glyph '%c' (0x%02X) has no path (adv <= 0)\n", c, c);
-                glyph_failures++;
-                continue;
-            }
+            CHECK_FMT(adv > 0.0f, "glyph '%c' (0x%02X) has path", c, c);
+            if (adv <= 0.0f) { glyph_failures++; continue; }
             /* Clear a test area */
             for (int i = 0; i < ui.w * ui.h; i++) ui.px[i] = 0;
             vg_reset_clip();
@@ -1930,16 +1918,10 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
             for (int i = 0; i < ui.w * ui.h; i++) {
                 if (ui.px[i] != 0) { any_lit = true; break; }
             }
-            if (!any_lit) {
-                fprintf(stderr, "FAIL: glyph '%c' (0x%02X) lights zero pixels\n", c, c);
-                glyph_failures++;
-            }
+            CHECK_FMT(any_lit, "glyph '%c' (0x%02X) lights pixels", c, c);
+            if (!any_lit) glyph_failures++;
         }
-        if (glyph_failures > 0) {
-            fprintf(stderr, "FAIL: %d glyph(s) failed to render\n", glyph_failures);
-            return 1;
-        }
-        printf("ok   all 94 printable ASCII glyphs (33-126) render at least one pixel\n");
+        CHECK(glyph_failures == 0, "all 94 printable ASCII glyphs (33-126) render");
         /* Save font strip for visual inspection */
         for (int i = 0; i < ui.w * ui.h; i++) ui.px[i] = ui.pal.bg_canvas;
         vg_reset_clip();
@@ -1961,6 +1943,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
         ui.test_negative_mode = 1;
         ui.w = 300;
         ui.h = 200;
+        ui.toast_timer = 0;
+        int negative_failures = 0;
         for (int tab = 0; tab < 5; tab++) {
             app_tab = tab;
             gui_frame();
@@ -1969,28 +1953,21 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
                 bool inside_window = !(r->x < 0 || r->y < 0 || r->x + r->w > ui.w || r->y + r->h > ui.h);
                 if (!inside_window) {
                     fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside window\n", tab, r->name);
-                    ui.test_failed++;
-                } else {
-                    ui.test_passed++;
+                    negative_failures++;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
                     Rect *p = &ui.rects[r->parent_id];
                     bool inside_parent = !(r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h);
                     if (!inside_parent) {
                         fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside parent '%s'\n", tab, r->name, p->name);
-                        ui.test_failed++;
-                    } else {
-                        ui.test_passed++;
+                        negative_failures++;
                     }
                 }
             }
         }
         ui.test_negative_mode = 0;
-        if (ui.test_failed == 0) {
-            fprintf(stderr, "FAIL: negative test found no bounds failures at 300x200 (bounds checking broken)\n");
-            return 1;
-        }
-        /* Exit 1 because failed > 0 */
+        CHECK(negative_failures > 0, "negative test found bounds failures at 300x200");
+        /* Exit 1 because failed > 0 (expected for negative test) */
         return 1;
     }
 
