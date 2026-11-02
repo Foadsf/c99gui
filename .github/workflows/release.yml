@@ -1,0 +1,298 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode: dry-run (upload only) or publish-test (test publish prep)'
+        required: false
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - publish-test
+      version:
+        description: 'Version for notes extraction (e.g., 2.1.0)'
+        required: false
+        type: string
+
+jobs:
+  # Determine if this is a real release (tag push) or dry-run
+  detect-mode:
+    runs-on: ubuntu-latest
+    outputs:
+      is_tag: ${{ steps.check.outputs.is_tag }}
+      is_dry_run: ${{ steps.check.outputs.is_dry_run }}
+      is_publish_test: ${{ steps.check.outputs.is_publish_test }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - id: check
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG="${{ github.ref_name }}"
+            VER="${TAG#v}"  # Strip leading 'v'
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "is_dry_run=false" >> $GITHUB_OUTPUT
+            echo "is_publish_test=false" >> $GITHUB_OUTPUT
+            echo "version=$VER" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            MODE="${{ github.event.inputs.mode }}"
+            VER="${{ github.event.inputs.version }}"
+            if [[ -z "$VER" ]]; then
+              VER="${{ github.ref_name }}"
+              VER="${VER#v}"
+            fi
+            echo "version=$VER" >> $GITHUB_OUTPUT
+            if [[ "$MODE" == "publish-test" ]]; then
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=false" >> $GITHUB_OUTPUT
+              echo "is_publish_test=true" >> $GITHUB_OUTPUT
+            else
+              # dry-run (default)
+              echo "is_tag=false" >> $GITHUB_OUTPUT
+              echo "is_dry_run=true" >> $GITHUB_OUTPUT
+              echo "is_publish_test=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # pull_request = always dry-run
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "is_dry_run=true" >> $GITHUB_OUTPUT
+            echo "is_publish_test=false" >> $GITHUB_OUTPUT
+            echo "version=UNRELEASED" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: detect-mode
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            cc: gcc
+            archive: tar.gz
+            platform_flags: "-lX11"
+          - os: macos-latest
+            target: macos-arm64
+            cc: clang
+            archive: tar.gz
+            platform_flags: "-framework Cocoa -framework CoreGraphics"
+          - os: windows-latest
+            target: windows-x64
+            cc: msvc
+            archive: zip
+            platform_flags: ""
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install X11 (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
+      - name: Build all four programs (Linux/macOS)
+        if: matrix.cc != 'msvc'
+        run: |
+          mkdir -p build
+          FLAGS="-std=c99 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror"
+          
+          # TUI - no graphics libraries
+          ${{ matrix.cc }} $FLAGS src/tui/c99gui.c -o build/c99gui-tui
+          
+          # Pixel GUI
+          ${{ matrix.cc }} $FLAGS src/pixel/gui.c ${{ matrix.platform_flags }} -o build/c99gui-pixel
+          
+          # Vector GUI
+          ${{ matrix.cc }} $FLAGS src/vector/gui.c ${{ matrix.platform_flags }} -o build/c99gui-vector
+          
+          # Suite GUI
+          ${{ matrix.cc }} $FLAGS src/suite/gui.c ${{ matrix.platform_flags }} -o build/c99gui-suite
+          
+          # Copy LICENSE and README
+          cp LICENSE build/
+          cp README.md build/
+
+      - name: Build all four programs (Windows MSVC)
+        if: matrix.cc == 'msvc'
+        shell: pwsh
+        run: |
+          # Find Visual Studio installation
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installPath) {
+            Write-Error "Visual Studio with C++ tools not found"
+            exit 1
+          }
+          
+          # Call vcvarsall.bat to set up environment
+          $vcvars = Join-Path $installPath "VC\Auxiliary\Build\vcvarsall.bat"
+          cmd.exe /c "call `"$vcvars`" amd64 && set" | ForEach-Object {
+            if ($_ -match '^(.*?)=(.*)$') {
+              [Environment]::SetEnvironmentVariable($matches[1], $matches[2])
+            }
+          }
+          
+          # Verify cl is available
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            Write-Error "cl.exe not found after running vcvarsall.bat"
+            exit 1
+          }
+          
+          # Build with strict warnings
+          $defs = @()
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          
+          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 $defs src\tui\c99gui.c /Febuild\c99gui-tui.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\pixel\gui.c /Febuild\c99gui-pixel.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\vector\gui.c /Febuild\c99gui-vector.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cl.exe /nologo /std:c11 /W4 /WX /O2 /MT /utf-8 src\suite\gui.c /Febuild\c99gui-suite.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item LICENSE build\
+          Copy-Item README.md build\
+
+      - name: Run smoke tests
+        shell: bash
+        run: |
+          chmod +x tests/smoke.sh tests/tui_smoke.sh
+          sh tests/tui_smoke.sh build/c99gui-tui${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          sh tests/smoke.sh build/c99gui-pixel${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          sh tests/smoke.sh build/c99gui-vector${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          sh tests/smoke.sh build/c99gui-suite${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+
+      - name: Sanitize ref name for artifact naming
+        shell: bash
+        run: |
+          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
+
+      - name: Create archive with top-level directory
+        shell: bash
+        run: |
+          mkdir -p "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}"
+          cp -r build/* "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
+          
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.zip" "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
+          else
+            tar czvf "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.tar.gz" "c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}/"
+          fi
+
+      - name: Upload artifacts
+        if: needs.detect-mode.outputs.is_dry_run == 'true' || needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}
+          path: c99gui-${{ needs.detect-mode.outputs.version }}-${{ matrix.target }}.${{ matrix.archive }}
+          retention-days: 7
+
+  # Publish job: downloads all artifacts, creates combined SHA256SUMS, creates release (or shows dry-run summary)
+  publish:
+    needs: [detect-mode, build]
+    if: needs.detect-mode.outputs.is_tag == 'true' || needs.detect-mode.outputs.is_publish_test == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      
+      - name: Sanitize ref name
+        run: |
+          REF_SAFE=$(echo "${{ github.ref_name }}" | tr '/' '-')
+          echo "REF_SAFE=$REF_SAFE" >> $GITHUB_ENV
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: c99gui-*
+          merge-multiple: true
+          path: ./release-artifacts
+
+      - name: List downloaded artifacts
+        shell: bash
+        run: |
+          echo "Downloaded artifacts:"
+          ls -la ./release-artifacts/ || echo "Directory not found"
+          pwd
+
+      - name: Extract release notes
+        id: extract-notes
+        shell: bash
+        run: |
+          bash scripts/extract-notes.sh "${{ needs.detect-mode.outputs.version }}" RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: Create SHA256SUMS
+        shell: bash
+        run: |
+          ls -la ./release-artifacts/
+          cd ./release-artifacts
+          # Find all archives and create combined checksums
+          > ../SHA256SUMS.txt
+          for archive in *.tar.gz *.zip; do
+            if [ -f "$archive" ]; then
+              sha256sum "$archive" >> ../SHA256SUMS.txt
+            fi
+          done
+          cd ..
+          # Verify all checksums
+          cd ./release-artifacts
+          sha256sum -c ../SHA256SUMS.txt
+          cd ..
+
+      - name: Create release (real)
+        if: needs.detect-mode.outputs.is_tag == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            release-artifacts/*.tar.gz
+            release-artifacts/*.zip
+            SHA256SUMS.txt
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
+
+      - name: Show publish-test summary
+        if: needs.detect-mode.outputs.is_publish_test == 'true'
+        shell: bash
+        run: |
+          echo "=== PUBLISH-TEST SUMMARY ==="
+          echo 'Version: ${{ needs.detect-mode.outputs.version }}'
+          echo "Release notes:"
+          cat RELEASE_NOTES.md
+          echo ""
+          echo "Artifacts:"
+          ls -la release-artifacts/
+          echo "SHA256SUMS:"
+          cat SHA256SUMS.txt
+          echo ""
+          echo "Publish preparation successful. To create real release, push a tag:"
+          echo '  git tag v${{ needs.detect-mode.outputs.version }} && git push origin v${{ needs.detect-mode.outputs.version }}'
+
+      - name: "Negative check: 9.9.9 should not have notes"
+        if: "needs.detect-mode.outputs.is_publish_test == 'true'"
+        shell: bash
+        run: |
+          echo "=== NEGATIVE CHECK: 9.9.9 (should fail) ==="
+          if bash scripts/extract-notes.sh 9.9.9 /tmp/notes_999.md 2>/dev/null; then
+            echo "ERROR: Extraction produced non-empty notes for non-existent 9.9.9" >&2
+            cat /tmp/notes_999.md
+            exit 1
+          fi
+          echo "PASS: 9.9.9 correctly has no changelog section"
+
+      - name: Show dry-run summary
+        if: needs.detect-mode.outputs.is_dry_run == 'true'
+        shell: bash
+        run: |
+          echo "=== DRY-RUN SUMMARY ==="
+          echo 'Version: ${{ needs.detect-mode.outputs.version }}'
+          echo "Artifacts uploaded (no release created)"
+          echo "To test publish preparation, use mode: publish-test"
+          echo "To create real release, push a tag v*"

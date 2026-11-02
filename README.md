@@ -1,85 +1,158 @@
-# c99gui (Comprehensive 2D Vector Graphics & Immediate-Mode GUI Framework)
+# c99gui — Four Pure C99 GUI Programs
 
-A monolithic, zero-allocation, resolution-independent **2D vector graphics immediate-mode desktop GUI framework in portable C99**.
-Uses zero third-party libraries, no GPU shaders, zero heap allocations (`malloc`-free), and zero `<math.h>` / `-lm` dependencies (self-contained IEEE-754 fast float math).
+A collection of four single-file, zero-allocation GUI programs in portable C99. Each program is self-contained with zero third-party library dependencies.
 
-Implements an advanced **32-bit ARGB SDF and Bézier vector rasterizer** in standard C99 (`WIN_W 980`, `WIN_H 640`) with:
-- **Vector Graphics & Rasterizer Upgrades**:
-  - **Hardware-Style Scissor Clipping Stack** (`vg_push_clip` / `vg_pop_clip` / `vg_reset_clip`): Enables nested scrollable viewports, bounded text inputs, and clipped node canvases.
-  - **Scanline Polygon Fill** (`vg_fill`) + **Unified SDF Stroke** (`vg_stroke`): Renders filled concave/convex vector polygons (area charts, badges, checkmarks) and sub-pixel anti-aliased Bézier strokes.
-  - **Bilinear 4-Corner Gradients** (`vg_fill_gradient`): Powers interactive 2D color pickers, illuminated cards, and styled elements.
-  - **Proportional ASCII Vector Typography**: SVG-style quadratic Bézier outlines (`M`, `L`, `Q`) with sub-pixel anti-aliasing, uppercase, lowercase with true ascenders and descenders, numerals, and punctuation. Zero bitmap font tables.
-- **Layout & Container Architecture**:
-  - **Scrollable Viewports** (`ui_begin_scroll` / `ui_end_scroll`): Vertical scrolling via mouse wheel and draggable vector scrollbars.
-  - **Responsive Multi-Column Grid** (`ui_columns` / `ui_next_column` / `ui_end_columns`): Automatic horizontal splitting.
-  - **Per-Widget Lerp Animation Table** (`ui_anim_step`): 60 FPS smooth transitions for toggle switches, checkboxes, radios, and hover highlights.
-  - **Deferred Z-Order Overlay Pass**: Renders dropdown popups, right-click context menus, modal confirmation dialogs, toast notifications, and hover tooltips on top of the scene.
-- **Complete Suite of 5 Interactive Workspaces**:
-  - **Tab 1 — Controls Suite**: Single-line text input box (`ui_textbox` with blinking vector caret, typing, and backspace), dropdown combo box, animated toggles, checkboxes, radio buttons, continuous sliders, rotary vector knobs (drag and scroll-wheel), and action buttons.
-  - **Tab 2 — Node Studio**: Interactive draggable node graph editor with 4 nodes connected by real-time cubic Bézier patch cables and subtle background dot grid.
-  - **Tab 3 — Data & Charts**: Real-time filled vector area waveform (`vg_fill` + `vg_stroke`), telemetry, and selectable process data table with status badges.
-  - **Tab 4 — Color Picker**: Interactive 2D HSV Saturation/Value gradient box, continuous Hue slider, live Hex readout (`#RRGGBB`), and Daylight High-Contrast Light Mode / Dark Mode palette switcher.
-  - **Tab 5 — Scaling & Modals**: Resolution-independent live UI vector scaling (`0.75x` – `1.30x`), modal confirmation dialog with dimmed backdrop and input capture, toast notification trigger, and multi-scale typography specimen.
-- **Native OS Windowing Backends**:
-  - **Windows**: Win32 GDI (`StretchDIBits`) with mouse tracking, mouse-wheel, keyboard input, and message pump.
-  - **Linux / BSD**: Native X11 (`XPutImage`) with event handling, or Headless fallback.
-  - **macOS**: Native Cocoa / CoreGraphics via C Objective-C runtime (`objc_msgSend`).
-  - **Headless / CI**: Built-in 32-bit uncompressed BMP exporter (`--snapshot <file.bmp>`, 2,508,854 bytes) and automated regression test suite (`--test`).
+## The Four Programs
 
-```
- ┌────────────────────────────────────────────────────────────────────────────────────────┐
- │ [● VECTOR SUITE]   │  1. CONTROLS SUITE  │  TEXT INPUT & DROPDOWN SELECTOR             │
- │                    │                     │  Project Name: [ VectorStudio_v2 | ]        │
- │  ▸ 1. CONTROLS     │                     │  Audio Routing: [ Low-Latency ASIO  ▾ ]     │
- │    2. NODE STUDIO  │  MULTI-COLUMN       │                                             │
- │    3. DATA & CHARTS│  SWITCHES & CHECKS  │  [●] Sub-Pixel SDF AA   [●] V-Sync Lock     │
- │    4. COLOR PICKER │                     │  [✔] Enable SIMD        (●) Real-Time Mode  │
- │    5. SCALING/MODAL│  ROTARY KNOBS       │                                             │
- │                    │  & SLIDERS          │    (Gain)    (Cutoff)   (Reson)   (Drive)   │
- │   ACCENT THEME     │                     │   [ 78% ]    [ 62Hz ]   [ 45% ]   [ 34% ]   │
- │   (●)(●)(●)(●)     │                     │  Master Gain    ━━━━━━━───────   78%        │
- │                    │                     │  [ SAVE PRESET ]     [ OPEN MODAL DIALOG ]  │
- ├────────────────────┴─────────────────────┴─────────────────────────────────────────────┤
- │ Status: Pure C99 SDF + Bezier Vector Rasterizer  |  Right-Click Anywhere for Menu      │
- └────────────────────────────────────────────────────────────────────────────────────────┘
+### 1. c99gui-tui (Terminal UI)
+
+**Source:** `src/tui/c99gui.c`  
+**Dependencies:** None (standard C library only)  
+**Status:** ✅ CI builds and tests on all platforms
+
+A zero-allocation, immediate-mode terminal GUI in C99. Uses a software framebuffer of UTF-8 cells with 24-bit color. All state lives in static storage — no heap allocations.
+
+**Build:**
+```sh
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/tui/c99gui.c -o c99gui-tui
+cl /std:c11 /W4 /O2 /MT /utf-8 src\tui\c99gui.c /Fe:c99gui-tui.exe
 ```
 
-## Quick Build
+**CLI:** `--help`, `--version`, `--snapshot FILE` (24-row text frame), `--test`
 
-Pick the command for your compiler; the program is a single file, `src/gui.c`:
+---
+
+### 2. c99gui-pixel (Pixel Desktop GUI)
+
+**Source:** `src/pixel/gui.c`  
+**Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Status:** ✅ CI builds on all platforms (headless test)
+
+A monolithic pixel-rendered desktop GUI with a 32-bit ARGB software rasterizer, sub-pixel anti-aliased rounded rectangles, alpha blending, soft drop shadows, and bit-packed vector-scaled font.
+
+**Build:**
+```sh
+# Windows (MinGW/MSYS2)
+gcc -std=c99 -O2 -Wall -Wextra -pedantic src/pixel/gui.c -lgdi32 -luser32 -o c99gui-pixel.exe
+
+# Linux (X11)
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/pixel/gui.c -lX11 -o c99gui-pixel
+
+# macOS
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/pixel/gui.c -framework Cocoa -framework CoreGraphics -o c99gui-pixel
+
+# Headless (testing)
+cc -std=c99 -O2 -DC99GUI_HEADLESS src/pixel/gui.c -o c99gui-pixel
+```
+
+**CLI:** `--help`, `--version`, `--test`, `--snapshot FILE.bmp`, `--headless`
+
+---
+
+### 3. c99gui-vector (Vector Desktop GUI)
+
+**Source:** `src/vector/gui.c`  
+**Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Status:** ✅ CI builds on all platforms (headless test)
+
+A resolution-independent SDF and Bézier vector graphics engine with SVG-style quadratic Bézier typography, sub-pixel anti-aliasing, and real-time DPI scaling (0.75x – 1.30x).
+
+**Build:**
+```sh
+# Windows (MinGW/MSYS2)
+gcc -std=c99 -O2 -Wall -Wextra -pedantic src/vector/gui.c -lgdi32 -luser32 -o c99gui-vector.exe
+
+# Linux (X11)
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/vector/gui.c -lX11 -o c99gui-vector
+
+# macOS
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/vector/gui.c -framework Cocoa -framework CoreGraphics -o c99gui-vector
+
+# Headless (testing)
+cc -std=c99 -O2 -DC99GUI_HEADLESS src/vector/gui.c -o c99gui-vector
+```
+
+**CLI:** `--help`, `--version`, `--test`, `--snapshot FILE.bmp`, `--headless`
+
+---
+
+### 4. c99gui-suite (Comprehensive Vector GUI Suite)
+
+**Source:** `src/suite/gui.c`  
+**Dependencies:** Win32 GDI (Windows), X11 (Linux), Cocoa/CoreGraphics (macOS), or headless  
+**Runtime:** Linux needs `libx11` package; macOS binaries are unsigned (run `xattr -d com.apple.quarantine` or use `--headless`)  
+**Status:** ✅ CI builds on all platforms (headless test)
+
+A comprehensive vector GUI framework with five interactive workspaces: Controls Suite, Node Studio, Data & Charts, Color Picker, and Scaling & Modals. Features scrollable containers, multi-column layouts, animated widgets, dropdown menus, modal dialogs, and toast notifications.
+
+**Build:**
+```sh
+# Windows (MinGW/MSYS2)
+gcc -std=c99 -O2 -Wall -Wextra -pedantic src/suite/gui.c -lgdi32 -luser32 -o c99gui-suite.exe
+
+# Linux (X11)
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/suite/gui.c -lX11 -o c99gui-suite
+
+# macOS
+cc -std=c99 -O2 -Wall -Wextra -pedantic src/suite/gui.c -framework Cocoa -framework CoreGraphics -o c99gui-suite
+
+# Headless (testing)
+cc -std=c99 -O2 -DC99GUI_HEADLESS src/suite/gui.c -o c99gui-suite
+```
+
+**CLI:** `--help`, `--version`, `--test`, `--snapshot FILE.bmp`, `--headless`, `--size WxH`, `--tab N`
+
+---
+
+## Quick Build Reference
 
 | Toolchain | Command |
 |---|---|
-| MSVC (Windows) | `build.cmd` or `cl /std:c11 /W4 /WX /O2 /MT /utf-8 src/gui.c` |
-| MinGW / MSYS2 GCC | `gcc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lgdi32 -luser32 -o gui.exe` |
-| Cygwin GCC / Clang | `gcc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lgdi32 -luser32 -o gui.exe` |
-| Linux / BSD (X11) | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -lX11 -o gui` |
-| macOS (Cocoa) | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic src/gui.c -framework Cocoa -framework CoreGraphics -o gui` |
-| Headless / Test | `cc -std=c99 -O2 -Wall -Wextra -Wpedantic -DC99GUI_HEADLESS src/gui.c -o gui` |
-| CMake | `cmake -B build && cmake --build build` |
-| Make | `make` (or `make headless`, `make test`, `make check`) |
+| **Make** | `make` (builds all four), `make test`, `make headless` |
+| **CMake** | `cmake -B build && cmake --build build` |
+| **Windows (MSVC)** | `build.cmd` or `build.cmd headless` |
+| **Windows (MSYS2)** | `pwsh scripts/build-matrix.ps1` |
 
-## Command-Line Options
+## Command-Line Options (GUI Programs)
 
 ```sh
-./gui --help             # Print command-line options
-./gui --version          # Print version (2.0.0)
-./gui --test             # Run 13-stage automated headless vector regression test suite
-./gui --snapshot out.bmp # Render one frame, export to 32-bit BMP (2,508,854 bytes), and exit
-./gui --headless         # Run 120 simulation frames headlessly without opening a window
+./c99gui-pixel --help             # Print command-line options
+./c99gui-pixel --version          # Print version
+./c99gui-pixel --test             # Run automated headless regression test suite
+./c99gui-pixel --snapshot out.bmp # Render one frame, export to 32-bit BMP, exit
+./c99gui-pixel --headless         # Run simulation frames without opening a window
+```
+
+## Command-Line Options (TUI)
+
+```sh
+./c99gui-tui --help               # Print command-line options
+./c99gui-tui --version            # Print version
+./c99gui-tui --snapshot           # Export 24-row text frame to stdout
 ```
 
 ## Verification
 
-Run the test suite against any binary:
+Run the smoke tests against built binaries:
 ```sh
-sh tests/smoke.sh build/gui.exe
+sh tests/tui_smoke.sh build/c99gui-tui
+sh tests/smoke.sh build/c99gui-pixel
+sh tests/smoke.sh build/c99gui-vector
+sh tests/smoke.sh build/c99gui-suite
 ```
 
-Run the Windows multi-compiler test matrix:
-```powershell
-pwsh scripts/build-matrix.ps1
-```
+## CI Status
+
+GitHub Actions builds all four programs on:
+- **Linux** (Ubuntu): GCC and Clang, X11 and headless modes
+- **macOS**: Clang, Cocoa and headless modes  
+- **Windows**: MSVC (x64) and MSYS2 UCRT64 GCC, default and headless modes
+
+CI compiles with platform backends (X11, Cocoa, GDI) and runs headless tests (`--test`, `--snapshot`). Window creation cannot be tested on CI runners.
+
+All builds use strict warnings: `-Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror` (GCC/Clang) or `/W4 /WX` (MSVC).
 
 ## License
 
