@@ -427,11 +427,13 @@ static int  pulse_cnt  = 0;
 
 /* Fast parabolic sine approximation (eliminates <math.h> / -lm dependency) */
 static float fast_sin(float x) {
+    /* Wrap to [-0.5, 0.5) turns, then parabolic sine with one refinement (max error ~0.0011) */
     x *= 0.15915494f;
     x -= (float)(int)x;
-    if (x < 0.0f) x += 1.0f;
-    float y = (x < 0.5f) ? (x * 4.0f - 1.0f) : (3.0f - x * 4.0f);
-    return y * (1.5f - 0.5f * y * y);
+    if (x < -0.5f) x += 1.0f;
+    else if (x >= 0.5f) x -= 1.0f;
+    float y = 8.0f * x - 16.0f * x * (x < 0.0f ? -x : x);
+    return 0.225f * (y * (y < 0.0f ? -y : y) - y) + y;
 }
 
 static void gui_frame(void) {
@@ -665,6 +667,18 @@ static int run_headless_tests(const char *bmp_output) {
     /* Test 1: Framebuffer initialization */
     gui_frame();
     CHECK(ui.px[100 * g_win_stride + 100] != 0, "framebuffer rasterized");
+
+    /* fast_sin against true sine values (radians, literals) */
+    {
+        static const float xs[] = {0.0f, 0.5235988f, 1.5707963f, 3.1415927f, 4.7123890f, -1.5707963f, 7.5f};
+        static const float ys[] = {0.0f, 0.5f, 1.0f, 0.0f, -1.0f, -1.0f, 0.9379999f};
+        char msg[96];
+        for (int i = 0; i < 7; i++) {
+            float d = fast_sin(xs[i]) - ys[i];
+            snprintf(msg, sizeof(msg), "fast_sin(%.4f) within 0.005 of %.4f (got %.4f)", (double)xs[i], (double)ys[i], (double)fast_sin(xs[i]));
+            CHECK(d < 0.005f && d > -0.005f, msg);
+        }
+    }
 
     /* Test 2: Nav click Dashboard -> Renderer (uses recorded rect) */
     int cx, cy;
