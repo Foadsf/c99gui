@@ -85,8 +85,8 @@
 #define WIN_H       640
 #define MIN_W       640
 #define MIN_H       400
-#define MAX_BUF_W   1920
-#define MAX_BUF_H   1080
+#define MAX_BUF_W   3840
+#define MAX_BUF_H   2160
 #define MAX_SEGS    256
 #define MAX_WIDGETS 256
 #define VG_PI       3.1415926535f
@@ -199,7 +199,7 @@ typedef struct {
 typedef struct {
     char name[64];
     int x, y, w, h, parent_id;
-} Rect;
+} UiRect;
 
 typedef struct {
     uint32_t px[MAX_BUF_W * MAX_BUF_H];
@@ -252,8 +252,8 @@ typedef struct {
     bool running;
     int w, h;
 
-    /* Honest Test Framework: Widget Rect Recording */
-    Rect rects[512];
+    /* Honest Test Framework: Widget UiRect Recording */
+    UiRect uirects[512];
     int rect_count;
     int current_parent;
     int parent_stack[16];
@@ -266,6 +266,12 @@ typedef struct {
 } GuiCtx;
 
 static GuiCtx ui;
+
+/* Window and snapshot sizes stay within [MIN, MAX_BUF]: px[] is a fixed MAX_BUF_W x MAX_BUF_H buffer with stride ui.w */
+static void ui_set_size(int w, int h) {
+    ui.w = w < MIN_W ? MIN_W : (w > MAX_BUF_W ? MAX_BUF_W : w);
+    ui.h = h < MIN_H ? MIN_H : (h > MAX_BUF_H ? MAX_BUF_H : h);
+}
 
 /* CHECK macro for honest test counting */
 #define CHECK(cond, msg) do { \
@@ -298,13 +304,13 @@ static int record_rect(const char *name, int x, int y, int w, int h, int parent_
         return -1; /* Outside clip region, not visible */
     }
     if (ui.rect_count >= 512) return -1;
-    strncpy(ui.rects[ui.rect_count].name, name, 63);
-    ui.rects[ui.rect_count].name[63] = '\0';
-    ui.rects[ui.rect_count].x = x;
-    ui.rects[ui.rect_count].y = y;
-    ui.rects[ui.rect_count].w = w;
-    ui.rects[ui.rect_count].h = h;
-    ui.rects[ui.rect_count].parent_id = parent_id;
+    strncpy(ui.uirects[ui.rect_count].name, name, 63);
+    ui.uirects[ui.rect_count].name[63] = '\0';
+    ui.uirects[ui.rect_count].x = x;
+    ui.uirects[ui.rect_count].y = y;
+    ui.uirects[ui.rect_count].w = w;
+    ui.uirects[ui.rect_count].h = h;
+    ui.uirects[ui.rect_count].parent_id = parent_id;
     ui.rect_count++;
     return ui.rect_count - 1;
 }
@@ -324,7 +330,7 @@ static float vg_text_width(const char *s, float size);
 
 static int find_rect(const char *name) {
     for (int i = 0; i < ui.rect_count; i++) {
-        if (strcmp(ui.rects[i].name, name) == 0) return i;
+        if (strcmp(ui.uirects[i].name, name) == 0) return i;
     }
     return -1;
 }
@@ -832,7 +838,7 @@ static void ui_begin_scroll(float x, float y, float w, float h, float *scroll_y,
 
 static void ui_end_scroll(void) {
     vg_pop_clip();
-    ui_pop_parent(); /* restore parent pushed by ui_begin_scroll */
+    ui_pop_parent(); /* restore parent pushed by scroll_viewport */
 }
 
 static void ui_toast(const char *msg) {
@@ -1381,7 +1387,7 @@ static void gui_frame(void) {
         ui_textbox("Project Name:", txt_name, (int)sizeof(txt_name));
         ui_dropdown("Audio Routing:", profiles, 4, &dd_profile);
 
-        ui_section("SWITCHES, CHECKBOXES & RADIOS");
+        ui_section("MULTI-COLUMN SWITCHES, CHECKBOXES SWITCHES, CHECKBOXES & RADIOS RADIOS");
         ui_toggle("Sub-Pixel AA", &chk_aa, "Toggle analytical signed-distance anti-aliasing");
         ui_toggle("V-Sync Lock", &chk_vsync, "Lock presentation to 60Hz display refresh");
         ui_checkbox("SIMD Vectorization", &chk_simd);
@@ -1691,8 +1697,7 @@ static bool save_bmp(const char *filename, int w, int h) {
 static int run_headless_tests(const char *bmp_output, int test_w, int test_h, int start_tab) {
     printf("Running C99 comprehensive vector GUI headless test suite...\n");
     ui.accent = 0xFF89B4FAu;
-    ui.w = test_w;
-    ui.h = test_h;
+    ui_set_size(test_w, test_h);
     app_tab = start_tab;
 
     /* Test 1: Initial frame render at requested size */
@@ -1725,8 +1730,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     int idx = find_rect("textbox:Project Name:");
     CHECK(idx >= 0, "textbox:Project Name: recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1742,8 +1747,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("toggle:Sub-Pixel AA");
     CHECK(idx >= 0, "toggle:Sub-Pixel AA recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1754,8 +1759,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("checkbox:SIMD Vectorization");
     CHECK(idx >= 0, "checkbox:SIMD Vectorization recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1765,8 +1770,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("nav_tab1");
     CHECK(idx >= 0, "nav_tab1 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1777,8 +1782,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("node_header0");
     CHECK(idx >= 0, "node_header0 recorded");
     if (idx >= 0) {
-        ui.mx = (float)ui.rects[idx].x + 10.0f * ui.scale;
-        ui.my = (float)ui.rects[idx].y + 10.0f * ui.scale;
+        ui.mx = (float)ui.uirects[idx].x + 10.0f * ui.scale;
+        ui.my = (float)ui.uirects[idx].y + 10.0f * ui.scale;
     }
     ui.mouse_pressed = true;
     ui.mouse_down = true;
@@ -1795,8 +1800,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("nav_tab2");
     CHECK(idx >= 0, "nav_tab2 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1806,8 +1811,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("table_row2");
     CHECK(idx >= 0, "table_row2 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1817,8 +1822,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("nav_tab3");
     CHECK(idx >= 0, "nav_tab3 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1827,8 +1832,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("sv_box");
     CHECK(idx >= 0, "sv_box recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     ui.mouse_down = true;
@@ -1842,8 +1847,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("nav_tab4");
     CHECK(idx >= 0, "nav_tab4 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
     }
     ui.mouse_pressed = true;
     gui_frame();
@@ -1853,8 +1858,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("button:Open Modal Dialog");
     CHECK(idx >= 0, "button:Open Modal Dialog recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
-        ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
+        ui.mx = (float)(ui.uirects[idx].x + ui.uirects[idx].w / 2);
+        ui.my = (float)(ui.uirects[idx].y + ui.uirects[idx].h / 2);
         ui.mouse_pressed = true;
         gui_frame();
     }
@@ -1891,15 +1896,14 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
         int tw = test_sizes[s][0];
         int th = test_sizes[s][1];
         for (int tab = 0; tab < 5; tab++) {
-            ui.w = tw;
-            ui.h = th;
+            ui_set_size(tw, th);
             app_tab = tab;
             nodes_layout_done = false; /* Re-layout nodes for each size */
             gui_frame();
             int rects_count = ui.rect_count;
             bool all_inside = true;
             for (int i = 0; i < ui.rect_count; i++) {
-                Rect *r = &ui.rects[i];
+                UiRect *r = &ui.uirects[i];
                 printf("DEBUG: tab %d rect %d: '%s' [%d,%d,%d,%d] parent=%d\n", tab, i, r->name, r->x, r->y, r->w, r->h, r->parent_id);
                 if (r->x < 0 || r->y < 0 || r->x + r->w > tw || r->y + r->h > th) {
                     fprintf(stderr, "FAIL: tab %d widget '%s' rect [%d,%d,%d,%d] outside window %dx%d\n",
@@ -1907,7 +1911,7 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
                     all_inside = false;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
-                    Rect *p = &ui.rects[r->parent_id];
+                    UiRect *p = &ui.uirects[r->parent_id];
                     CHECK_FMT(!(r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h),
                           "tab %d widget '%s' inside parent '%s'", tab, r->name, p->name);
                 }
@@ -1915,9 +1919,9 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
             if (all_inside) {
                 /* Sibling overlap check: any two rects with same parent that intersect = FAIL */
                 for (int i = 0; i < ui.rect_count; i++) {
-                    Rect *r = &ui.rects[i];
+                    UiRect *r = &ui.uirects[i];
                     for (int j = i + 1; j < ui.rect_count; j++) {
-                        Rect *r2 = &ui.rects[j];
+                        UiRect *r2 = &ui.uirects[j];
                         if (r2->parent_id == r->parent_id) {
                             bool overlap = (r->x < r2->x + r2->w && r->x + r->w > r2->x &&
                                             r->y < r2->y + r2->h && r->y + r->h > r2->y);
@@ -1938,8 +1942,7 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
     /* Font Glyph Verification: every printable ASCII 33-126 must light at least one pixel */
     {
-        ui.w = 980;
-        ui.h = 200;
+        ui_set_size(980, 200);
         app_tab = 0;
         gui_frame();
         int glyph_failures = 0;
@@ -1981,22 +1984,21 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     /* Negative test mode: run every tab at 300x200 (below minimum), verify bounds failures are reported */
     if (getenv("C99GUI_TEST_NEGATIVE")) {
         ui.test_negative_mode = 1;
-        ui.w = 300;
-        ui.h = 200;
+        ui_set_size(300, 200);
         ui.toast_timer = 0;
         int negative_failures = 0;
         for (int tab = 0; tab < 5; tab++) {
             app_tab = tab;
             gui_frame();
             for (int i = 0; i < ui.rect_count; i++) {
-                Rect *r = &ui.rects[i];
+                UiRect *r = &ui.uirects[i];
                 bool inside_window = !(r->x < 0 || r->y < 0 || r->x + r->w > ui.w || r->y + r->h > ui.h);
                 if (!inside_window) {
                     fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside window\n", tab, r->name);
                     negative_failures++;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
-                    Rect *p = &ui.rects[r->parent_id];
+                    UiRect *p = &ui.uirects[r->parent_id];
                     bool inside_parent = !(r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h);
                     if (!inside_parent) {
                         fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside parent '%s'\n", tab, r->name, p->name);
@@ -2017,15 +2019,14 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
 static int run_snapshot(const char *filename, int w, int h, int tab) {
     ui.accent = 0xFF89B4FAu;
-    ui.w = w;
-    ui.h = h;
+    ui_set_size(w, h);
     app_tab = tab;
     gui_frame();
-    if (!save_bmp(filename, w, h)) {
+    if (!save_bmp(filename, ui.w, ui.h)) {
         fprintf(stderr, "FAIL: saving BMP output to %s failed\n", filename);
         return 1;
     }
-    printf("ok   vector snapshot saved to %s (%dx%d, tab %d)\n", filename, w, h, tab);
+    printf("ok   vector snapshot saved to %s (%dx%d, tab %d)\n", filename, ui.w, ui.h, tab);
     return 0;
 }
 
@@ -2067,6 +2068,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 MINMAXINFO *mmi = (MINMAXINFO *)lp;
                 mmi->ptMinTrackSize.x = MIN_W;
                 mmi->ptMinTrackSize.y = MIN_H;
+                mmi->ptMaxTrackSize.x = MAX_BUF_W;
+                mmi->ptMaxTrackSize.y = MAX_BUF_H;
             }
             return 0;
         case WM_MOUSEMOVE:
@@ -2139,8 +2142,7 @@ static int run_win32_window(void) {
     bmi.bmiHeader.biBitCount    = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
-    ui.w = WIN_W;
-    ui.h = WIN_H;
+    ui_set_size(WIN_W, WIN_H);
     ui.accent = 0xFF89B4FAu;
     ui.running = true;
     while (ui.running) {
@@ -2192,8 +2194,7 @@ static int run_cocoa_window(void) {
     msg1(void, view, "setLayer:", id, layer);
     msg1(void, view, "setWantsLayer:", BOOL, 1);
 
-    ui.w = WIN_W;
-    ui.h = WIN_H;
+    ui_set_size(WIN_W, WIN_H);
     ui.accent = 0xFF89B4FAu;
     ui.running = true;
     while (ui.running && msg0(BOOL, win, "isVisible")) {
@@ -2229,7 +2230,7 @@ static int run_cocoa_window(void) {
         ui.my = (float)ui.h - (float)mp.y;
 
         gui_frame();
-        CGContextRef ctx = CGBitmapContextCreate(ui.px, ui.w, ui.h, 8, ui.w * 4, cs,
+        CGContextRef ctx = CGBitmapContextCreate(ui.px, (size_t)ui.w, (size_t)ui.h, 8, (size_t)ui.w * 4, cs,
                            (uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaNoneSkipFirst);
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         msg1(void, layer, "setContents:", id, (id)img);
@@ -2250,12 +2251,22 @@ static int run_x11_window(void) {
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
         fprintf(stderr, "c99gui: cannot connect to X11 display (running in headless mode)\n");
-        return run_headless_tests(NULL);
+        return run_headless_tests(NULL, WIN_W, WIN_H, 0);
     }
     int scr = DefaultScreen(dpy);
     Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 80, 80, WIN_W, WIN_H, 1,
                                      BlackPixel(dpy, scr), WhitePixel(dpy, scr));
-    XStoreName(dpy, win, "Pure C99 Vector GUI Framework");
+    XSizeHints *hints = XAllocSizeHints();
+    if (hints) {
+        hints->flags = PMinSize | PMaxSize;
+        hints->min_width = MIN_W;
+        hints->min_height = MIN_H;
+        hints->max_width = MAX_BUF_W;
+        hints->max_height = MAX_BUF_H;
+        XSetWMNormalHints(dpy, win, hints);
+        XFree(hints);
+    }
+    XStoreName(dpy, win, "Pure C99 Vector GUI");
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask);
     Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete, 1);
@@ -2263,10 +2274,9 @@ static int run_x11_window(void) {
 
     GC gc = DefaultGC(dpy, scr);
     XImage *img = XCreateImage(dpy, DefaultVisual(dpy, scr), (unsigned int)DefaultDepth(dpy, scr),
-                               ZPixmap, 0, (char *)ui.px, WIN_W, WIN_H, 32, 0);
+                               ZPixmap, 0, (char *)ui.px, (unsigned int)WIN_W, (unsigned int)WIN_H, 32, 0);
 
-    ui.w = WIN_W;
-    ui.h = WIN_H;
+    ui_set_size(WIN_W, WIN_H);
     ui.accent = 0xFF89B4FAu;
     ui.running = true;
     while (ui.running) {
@@ -2274,11 +2284,13 @@ static int run_x11_window(void) {
             XEvent ev;
             XNextEvent(dpy, &ev);
             if (ev.type == ConfigureNotify) {
-                ui.w = ev.xconfigure.width;
-                ui.h = ev.xconfigure.height;
-                XDestroyImage(img);
-                img = XCreateImage(dpy, DefaultVisual(dpy, scr), (unsigned int)DefaultDepth(dpy, scr),
-                                   ZPixmap, 0, (char *)ui.px, ui.w, ui.h, 32, 0);
+                if (ev.xconfigure.width != ui.w || ev.xconfigure.height != ui.h) {
+                    ui_set_size(ev.xconfigure.width, ev.xconfigure.height);
+                    img->data = NULL;
+                    XDestroyImage(img);
+                    img = XCreateImage(dpy, DefaultVisual(dpy, scr), (unsigned int)DefaultDepth(dpy, scr),
+                                       ZPixmap, 0, (char *)ui.px, (unsigned int)ui.w, (unsigned int)ui.h, 32, 0);
+                }
             } else if (ev.type == MotionNotify) {
                 ui.mx = (float)ev.xmotion.x; ui.my = (float)ev.xmotion.y;
             } else if (ev.type == ButtonPress) {
@@ -2301,7 +2313,7 @@ static int run_x11_window(void) {
             }
         }
         gui_frame();
-        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, ui.w, ui.h);
+        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, (unsigned int)ui.w, (unsigned int)ui.h);
         XFlush(dpy);
 
         struct timespec ts = {0, 16000000L};
