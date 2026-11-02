@@ -970,7 +970,8 @@ static void ui_knob(float cx, float cy, float r, const char *label, float *val, 
     int id = ui_id();
     char rname[64];
     snprintf(rname, sizeof(rname), "knob:%s", label);
-    int self = record_rect(rname, (int)(cx - r - 8.0f), (int)(cy - r - 8.0f), (int)(r * 2.0f + 16.0f), (int)(r * 2.0f + 28.0f), ui.current_parent);
+    /* Increase rect height from 28 to 40 to fully include label below knob */
+    int self = record_rect(rname, (int)(cx - r - 8.0f), (int)(cy - r - 8.0f), (int)(r * 2.0f + 16.0f), (int)(r * 2.0f + 40.0f), ui.current_parent);
     ui_push_parent(self);
     bool hover = !ui.modal_open && hit_box(cx - r - 8.0f, cy - r - 8.0f, r * 2.0f + 16.0f, r * 2.0f + 28.0f);
     if (hover) {
@@ -1135,6 +1136,7 @@ static float val_scale = 100.0f;
 static float picker_h = 0.60f, picker_s = 0.45f, picker_v = 0.98f;
 static int   table_sel = 1;
 static float scroll_t2  = 0.0f;
+static float scroll_t3  = 0.0f;
 
 static GraphNode nodes[4] = {
     {"Oscillator A",  30.0f,  45.0f, 150.0f, 92.0f, 0xFF89B4FAu},
@@ -1143,6 +1145,7 @@ static GraphNode nodes[4] = {
     {"Master Out",   475.0f, 120.0f, 145.0f, 84.0f, 0xFFFAB387u}
 };
 static int drag_node = -1;
+static bool nodes_layout_done = false;
 
 static void update_theme_palette(void) {
     if (ui.light_mode) {
@@ -1185,17 +1188,52 @@ static bool ui_nav_tab(float x, float y, float w, const char *label, int idx) {
     return active;
 }
 
-static void render_node_studio(float cx, float cy, float cw, float ch) {
-    /* Clamp node positions to fit within card bounds */
-    for (int i = 0; i < 4; i++) {
-        GraphNode *n = &nodes[i];
-        float max_x = (cw / ui.scale) - n->w - 10.0f;
-        float max_y = (ch / ui.scale) - n->h - 10.0f;
-        if (n->x > max_x) n->x = max_x;
-        if (n->y > max_y) n->y = max_y;
-        if (n->x < 10.0f) n->x = 10.0f;
-        if (n->y < 10.0f) n->y = 10.0f;
+/* Auto-layout nodes in a grid to prevent overlap */
+static void layout_nodes(float cw, float ch) {
+    if (nodes_layout_done) return;
+    float canvas_w = cw / ui.scale;
+    float canvas_h = ch / ui.scale;
+    float margin = 10.0f;
+    float spacing = 20.0f;
+    
+    /* Calculate grid: 2 columns x 2 rows */
+    float avail_w = canvas_w - 2.0f * margin;
+    float avail_h = canvas_h - 2.0f * margin;
+    
+    /* Node sizes */
+    float nw = nodes[0].w;  /* 150 */
+    float nh = nodes[0].h;  /* 92 */
+    
+    /* Check if 2x2 grid fits */
+    float needed_w = 2.0f * nw + spacing;
+    float needed_h = 2.0f * nh + spacing;
+    
+    int cols = 2;
+    if (needed_w > avail_w) {
+        cols = 1;
+        needed_w = nw;
+        needed_h = 4.0f * nh + 3.0f * spacing;
     }
+    if (needed_h > avail_h) {
+        /* Scale down spacing */
+        spacing = vg_maxf(10.0f, (avail_h - 4.0f * nh) / 3.0f);
+    }
+    
+    float start_x = margin + (avail_w - needed_w) * 0.5f;
+    float start_y = margin + (avail_h - needed_h) * 0.5f;
+    
+    for (int i = 0; i < 4; i++) {
+        int col = i % cols;
+        int row = i / cols;
+        nodes[i].x = start_x + (float)col * (nw + spacing);
+        nodes[i].y = start_y + (float)row * (nh + spacing);
+    }
+    nodes_layout_done = true;
+}
+
+static void render_node_studio(float cx, float cy, float cw, float ch) {
+    /* Auto-layout nodes to prevent overlap (only once) */
+    layout_nodes(cw, ch);
 
     vg_fill_rrect(cx, cy, cw, ch, 10.0f * ui.scale, ui.pal.bg_canvas);
     vg_stroke_rrect(cx, cy, cw, ch, 10.0f * ui.scale, 1.0f, ui.pal.border);
@@ -1231,9 +1269,14 @@ static void render_node_studio(float cx, float cy, float cw, float ch) {
         float nw = n->w * ui.scale,      nh = n->h * ui.scale;
 
         char node_name[32];
-        snprintf(node_name, sizeof(node_name), "node_header%d", i);
-        record_rect(node_name, (int)nx, (int)ny, (int)nw, (int)(26.0f * ui.scale), ui.current_parent);
-        int node_parent = ui.current_parent;
+        snprintf(node_name, sizeof(node_name), "node:%s", n->title);
+        int node_self = record_rect(node_name, (int)nx, (int)ny, (int)nw, (int)nh, ui.current_parent);
+        ui_push_parent(node_self);
+
+        char header_name[32];
+        snprintf(header_name, sizeof(header_name), "node_header%d", i);
+        record_rect(header_name, (int)nx, (int)ny, (int)nw, (int)(26.0f * ui.scale), ui.current_parent);
+        int header_parent = ui.current_parent;
         ui.current_parent = ui.rect_count - 1;
 
         if (!ui.modal_open && hit_box(nx, ny, nw, nh) && ui.mouse_pressed) {
@@ -1255,13 +1298,14 @@ static void render_node_studio(float cx, float cy, float cw, float ch) {
         vg_fill_rrect(nx, ny, nw, 26.0f * ui.scale, 8.0f * ui.scale, n->col);
         vg_stroke_rrect(nx, ny, nw, nh, 8.0f * ui.scale, 1.2f, (drag_node == i) ? 0xFFFFFFFFu : n->col);
         vg_text(nx + 10.0f * ui.scale, ny + 7.0f * ui.scale, 11.5f * ui.scale, n->title, 0xFF11121Cu);
+        ui.current_parent = header_parent;
         vg_text(nx + 12.0f * ui.scale, ny + 42.0f * ui.scale, 11.0f * ui.scale, "Signal Port", ui.pal.text_muted);
-        ui.current_parent = node_parent;
+        ui_pop_parent(); /* node */
         vg_fill_circle(nx, ny + 48.0f * ui.scale, 5.0f * ui.scale, n->col);
         vg_fill_circle(nx + nw, ny + 52.0f * ui.scale, 5.0f * ui.scale, n->col);
     }
     vg_text(cx + 14.0f * ui.scale, cy + ch - 22.0f * ui.scale, 11.5f * ui.scale,
-            "Drag any node header to reroute real-time Cubic Bezier patch cables.", ui.pal.text_muted);
+            "Drag header to reroute Bezier cables.", ui.pal.text_muted);
     vg_pop_clip();
 }
 
@@ -1338,17 +1382,16 @@ static void gui_frame(void) {
         ui_dropdown("Audio Routing:", profiles, 4, &dd_profile);
 
         ui_section("MULTI-COLUMN SWITCHES, CHECKBOXES & RADIOS");
-        ui_columns(2);
-        ui_toggle("Sub-Pixel SDF AA", &chk_aa, "Toggle analytical signed-distance anti-aliasing");
-        ui_toggle("V-Sync Frame Lock", &chk_vsync, "Lock presentation to 60Hz display refresh");
-        ui_checkbox("Enable SIMD Vectorization", &chk_simd);
+        ui_toggle("Sub-Pixel AA", &chk_aa, "Toggle analytical signed-distance anti-aliasing");
+        ui_toggle("V-Sync Lock", &chk_vsync, "Lock presentation to 60Hz display refresh");
+        ui_checkbox("SIMD Vectorization", &chk_simd);
         ui_radio("Mode: Real-Time", &rad_mode, 0);
-        ui_end_columns();
 
         ui_section("ROTARY VECTOR KNOBS & CONTINUOUS SLIDERS");
         /* Responsive knob layout: 2x2 grid at narrow widths, 4x1 at wide */
         float knob_r = 26.0f * ui.scale;
         float knob_w = knob_r * 2.0f + 16.0f;
+        float knob_h = knob_r * 2.0f + 40.0f; /* Match rect height */
         float avail_w = ui.lw;
         int knobs_per_row = (avail_w >= knob_w * 4.0f + 30.0f) ? 4 : 2;
         float start_x = ui.lx + (avail_w - (float)knobs_per_row * knob_w) * 0.5f;
@@ -1357,12 +1400,12 @@ static void gui_frame(void) {
             int row = k / knobs_per_row;
             int col = k % knobs_per_row;
             float kx = start_x + (float)col * (knob_w + 10.0f);
-            float ky_row = ky + (float)row * (knob_r * 2.0f + 28.0f + 10.0f);
+            float ky_row = ky + (float)row * (knob_h + 10.0f);
             const char *labels[4] = {"Gain", "Cutoff", "Reson", "Drive"};
             float *vals[4] = {&val_gain, &val_cutoff, &val_res, &val_drive};
-            ui_knob(kx, ky_row, knob_r, labels[k], vals[k], 0.0f, 100.0f);
+            ui_knob(kx, ky_row + knob_r, knob_r, labels[k], vals[k], 0.0f, 100.0f);
         }
-        ui.ly += 86.0f * ui.scale + (knobs_per_row == 2 ? (knob_r * 2.0f + 28.0f + 10.0f) : 0.0f);
+        ui.ly += 34.0f * ui.scale + (float)(knobs_per_row == 2 ? 2 : 1) * (knob_h + 10.0f) + 10.0f * ui.scale;
 
         /* Columns stack to 1 when narrow */
         int slider_cols = (ui.lw >= 300.0f * ui.scale) ? 2 : 1;
@@ -1370,10 +1413,6 @@ static void gui_frame(void) {
         ui_slider("Master Output Gain", &val_gain, 0.0f, 100.0f, "%");
         ui_slider("Filter Cutoff Freq", &val_cutoff, 10.0f, 100.0f, "Hz");
         if (ui_button("Save Preset", true)) ui_toast("Preset saved to memory!");
-        /* Record modal button rect for test clicking */
-        { float bw = (ui.col_count > 1) ? ui.lw : (vg_text_width("Open Modal Dialog", 12.5f * ui.scale) + 34.0f * ui.scale);
-          float bh = 36.0f * ui.scale;
-          record_rect("modal_button", (int)ui.lx, (int)ui.ly, (int)bw, (int)bh, ui.current_parent); }
         if (ui_button("Open Modal Dialog", false)) ui.modal_open = true;
         ui_end_columns();
         ui_end_scroll();
@@ -1450,7 +1489,7 @@ static void gui_frame(void) {
         ui_end_scroll();
 
     } else if (app_tab == 3) {
-        ui.lx = mx + 20.0f * ui.scale; ui.ly = pad + 18.0f * ui.scale; ui.lw = mw - 40.0f * ui.scale;
+        ui_begin_scroll(mx, pad, mw, card_h, &scroll_t3, 480.0f * ui.scale);
         ui_section("2D HSV COLOR PICKER & THEME POLARITY");
         ui_toggle("Daylight High-Contrast Light Theme", &ui.light_mode, "Switch between Dark and Light palettes");
 
@@ -1470,42 +1509,42 @@ static void gui_frame(void) {
         }
         vg_fill_circle(sv_x + picker_s * sv_w, sv_y + (1.0f - picker_v) * sv_h, 7.0f * ui.scale, 0xFFFFFFFFu);
         vg_fill_circle(sv_x + picker_s * sv_w, sv_y + (1.0f - picker_v) * sv_h, 4.5f * ui.scale, ui.accent);
+        ui.ly = sv_y + sv_h + 16.0f * ui.scale;
+        ui.lx = sv_x; ui.lw = sv_w;
 
-        /* Hue Spectrum Bar & Hex Preview */
-        float hx = sv_x + sv_w + 24.0f * ui.scale, hw = ui.lw - sv_w - 24.0f * ui.scale;
-        ui.lx = hx; ui.lw = hw;
+        /* Hue Spectrum Bar */
         float old_h = picker_h * 360.0f;
-        ui_slider("Hue Angle", &old_h, 0.0f, 360.0f, "deg");
+        ui_slider("Hue", &old_h, 0.0f, 360.0f, "deg");
         if (vg_absf(old_h - picker_h * 360.0f) > 0.1f) {
             picker_h = old_h / 360.0f;
             ui.accent = hsv_to_argb(picker_h, picker_s, picker_v);
         }
+        ui.ly += 8.0f * ui.scale;
 
+        /* Hex Preview */
         char hex_buf[16] = "HEX: ";
         char raw_hex[10];
         str_from_hex(raw_hex, ui.accent);
         str_append(hex_buf, 16, raw_hex);
-        vg_fill_rrect(hx, ui.ly, hw, 48.0f * ui.scale, 8.0f * ui.scale, ui.accent);
-        vg_text(hx + 16.0f * ui.scale, ui.ly + 16.0f * ui.scale, 14.0f * ui.scale, hex_buf, 0xFF11121Cu);
+        float hex_w = vg_text_width(hex_buf, 14.0f * ui.scale) + 32.0f * ui.scale;
+        vg_fill_rrect(ui.lx, ui.ly, hex_w, 48.0f * ui.scale, 8.0f * ui.scale, ui.accent);
+        vg_text(ui.lx + 16.0f * ui.scale, ui.ly + 16.0f * ui.scale, 14.0f * ui.scale, hex_buf, 0xFF11121Cu);
+        ui_end_scroll();
 
     } else {
         ui.lx = mx + 20.0f * ui.scale; ui.ly = pad + 18.0f * ui.scale; ui.lw = mw - 40.0f * ui.scale;
-        ui_section("RESOLUTION-INDEPENDENT DPI SCALING & OVERLAYS");
+        ui_section("DPI SCALING & OVERLAYS");
         ui_slider("Global Vector DPI Scale", &val_scale, 75.0f, 125.0f, "%");
         ui_columns(2);
         if (ui_button("Trigger Toast Alert", true)) ui_toast("Vector Toast Notification Active!");
-        /* Record modal button rect for test clicking */
-        { float bw = (ui.col_count > 1) ? ui.lw : (vg_text_width("Open Modal Dialog", 12.5f * ui.scale) + 34.0f * ui.scale);
-          float bh = 36.0f * ui.scale;
-          record_rect("modal_button", (int)ui.lx, (int)ui.ly, (int)bw, (int)bh, ui.current_parent); }
         if (ui_button("Open Modal Dialog", false)) ui.modal_open = true;
         if (ui_button("Reset 100% DPI", false)) val_scale = 100.0f;
         ui_end_columns();
 
-        ui_section("MULTI-SCALE VECTOR TYPOGRAPHY SPECIMEN");
-        vg_text(ui.lx, ui.ly,                     11.0f * ui.scale, "11pt: Pack my box with five dozen liquor jugs (0123456789)", ui.pal.text_muted);
-        vg_text(ui.lx, ui.ly + 24.0f * ui.scale,  15.0f * ui.scale, "15pt: Pure C99 Quadratic Bezier Vector Outlines", ui.pal.text_main);
-        vg_text(ui.lx, ui.ly + 54.0f * ui.scale,  21.0f * ui.scale, "21pt: Zero Bitmap Fonts - Infinite Scale!", ui.accent);
+        ui_section("VECTOR TYPOGRAPHY SPECIMEN");
+        vg_text(ui.lx, ui.ly,                     11.0f * ui.scale, "11pt: Pack my box with five dozen liquor jugs", ui.pal.text_muted);
+        vg_text(ui.lx, ui.ly + 24.0f * ui.scale,  15.0f * ui.scale, "15pt: Pure C99 Quadratic Bezier", ui.pal.text_main);
+        vg_text(ui.lx, ui.ly + 54.0f * ui.scale,  21.0f * ui.scale, "21pt: Zero Bitmap Fonts", ui.accent);
     }
     ui.current_parent = workspace_parent;
 
@@ -1514,7 +1553,7 @@ static void gui_frame(void) {
     vg_fill_rrect(pad, sy_bar, (float)ui.w - pad * 2.0f, status_h, 6.0f * ui.scale, ui.pal.bg_card);
     vg_stroke_rrect(pad, sy_bar, (float)ui.w - pad * 2.0f, status_h, 6.0f * ui.scale, 1.0f, ui.pal.border);
     vg_text(pad + 14.0f * ui.scale, sy_bar + (status_h - 11.0f * ui.scale) * 0.5f + 2.0f * ui.scale, 11.0f * ui.scale,
-            "Engine: Pure C99 SDF + Bezier Vector Rasterizer  |  Right-Click Anywhere for Context Menu", ui.pal.text_muted);
+            "Engine: Pure C99 Vector Rasterizer  |  Right-Click for Context Menu", ui.pal.text_muted);
 
     /* =====================================================================
      * 5. DEFERRED Z-ORDER OVERLAY PASS (Dropdowns, Context Menu, Modal, Toast)
@@ -1700,8 +1739,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
     /* Test 3: Toggle AA switch */
     bool before_aa = chk_aa;
-    idx = find_rect("toggle:Sub-Pixel SDF AA");
-    CHECK(idx >= 0, "toggle:Sub-Pixel SDF AA recorded");
+    idx = find_rect("toggle:Sub-Pixel AA");
+    CHECK(idx >= 0, "toggle:Sub-Pixel AA recorded");
     if (idx >= 0) {
         ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
         ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
@@ -1712,8 +1751,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
 
     /* Test 4: Checkbox state */
     bool before_simd = chk_simd;
-    idx = find_rect("checkbox:Enable SIMD Vectorization");
-    CHECK(idx >= 0, "checkbox:Enable SIMD Vectorization recorded");
+    idx = find_rect("checkbox:SIMD Vectorization");
+    CHECK(idx >= 0, "checkbox:SIMD Vectorization recorded");
     if (idx >= 0) {
         ui.mx = (float)(ui.rects[idx].x + ui.rects[idx].w / 2);
         ui.my = (float)(ui.rects[idx].y + ui.rects[idx].h / 2);
@@ -1855,6 +1894,7 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
             ui.w = tw;
             ui.h = th;
             app_tab = tab;
+            nodes_layout_done = false; /* Re-layout nodes for each size */
             gui_frame();
             int rects_count = ui.rect_count;
             bool all_inside = true;
