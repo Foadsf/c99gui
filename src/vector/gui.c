@@ -111,7 +111,7 @@ typedef struct {
 typedef struct {
     char name[64];
     int x, y, w, h, parent_id;
-} Rect;
+} UiRect;
 
 typedef struct {
     uint32_t px[MAX_BUF_W * MAX_BUF_H];
@@ -131,14 +131,20 @@ typedef struct {
     bool running;
     int w, h;
 
-    /* Honest Test Framework: Widget Rect Recording */
-    Rect rects[256];
+    /* Honest Test Framework: Widget UiRect Recording */
+    UiRect rects[256];
     int rect_count;
     int current_parent;
     int test_negative_mode;
 } GuiCtx;
 
 static GuiCtx ui;
+
+/* Window and snapshot sizes stay within [MIN, MAX_BUF]: px[] is a fixed MAX_BUF_W x MAX_BUF_H buffer with stride ui.w */
+static void ui_set_size(int w, int h) {
+    ui.w = w < MIN_W ? MIN_W : (w > MAX_BUF_W ? MAX_BUF_W : w);
+    ui.h = h < MIN_H ? MIN_H : (h > MAX_BUF_H ? MAX_BUF_H : h);
+}
 
 static void record_rect(const char *name, int x, int y, int w, int h, int parent_id) {
     if (ui.rect_count < 256) {
@@ -959,15 +965,14 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
 
     /* Snapshot mode: render one frame at requested size/tab and save */
     if (bmp_output && !negative_mode) {
-        ui.w = snap_w;
-        ui.h = snap_h;
+        ui_set_size(snap_w, snap_h);
         app_tab = snap_tab;
         gui_frame();
-        if (!save_bmp(bmp_output, snap_w, snap_h)) {
+        if (!save_bmp(bmp_output, ui.w, ui.h)) {
             fprintf(stderr, "FAIL: saving BMP output to %s failed\n", bmp_output);
             return 1;
         }
-        printf("ok   vector snapshot saved to %s (%dx%d tab=%d)\n", bmp_output, snap_w, snap_h, snap_tab);
+        printf("ok   vector snapshot saved to %s (%dx%d tab=%d)\n", bmp_output, ui.w, ui.h, snap_tab);
         return 0;
     }
 
@@ -979,7 +984,7 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
             app_tab = t;
             gui_frame();
             for (int i = 0; i < ui.rect_count; i++) {
-                const Rect *r = &ui.rects[i];
+                const UiRect *r = &ui.rects[i];
                 int rx = r->x;
                 int ry = r->y;
                 int rw = r->w;
@@ -990,7 +995,7 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
                     failed++;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
-                    const Rect *pr = &ui.rects[r->parent_id];
+                    const UiRect *pr = &ui.rects[r->parent_id];
                     if (rx < pr->x || ry < pr->y || rx + rw > pr->x + pr->w || ry + rh > pr->y + pr->h) {
                         fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside parent '%s' [%d,%d,%d,%d]\n",
                                 r->name, rx, ry, rw, rh, pr->name, pr->x, pr->y, pr->w, pr->h);
@@ -1001,8 +1006,8 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
             /* Sibling overlap check */
             for (int i = 0; i < ui.rect_count; i++) {
                 for (int j = i + 1; j < ui.rect_count; j++) {
-                    const Rect *a = &ui.rects[i];
-                    const Rect *b = &ui.rects[j];
+                    const UiRect *a = &ui.rects[i];
+                    const UiRect *b = &ui.rects[j];
                     /* Text rects count: labels are parented to their own widget, so a label on a sibling is a real overlap */
                     if (a->parent_id >= 0 && a->parent_id == b->parent_id) {
                         if (a->x < b->x + b->w && a->x + a->w > b->x &&
@@ -1033,7 +1038,7 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
             int tab_rects = ui.rect_count;
             int tab_failed = 0;
             for (int i = 0; i < ui.rect_count; i++) {
-                const Rect *r = &ui.rects[i];
+                const UiRect *r = &ui.rects[i];
                 int rx = r->x;
                 int ry = r->y;
                 int rw = r->w;
@@ -1044,7 +1049,7 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
                     failed++; tab_failed++;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
-                    const Rect *pr = &ui.rects[r->parent_id];
+                    const UiRect *pr = &ui.rects[r->parent_id];
                     if (rx < pr->x || ry < pr->y || rx + rw > pr->x + pr->w || ry + rh > pr->y + pr->h) {
                         fprintf(stderr, "FAIL: rect '%s' [%d,%d,%d,%d] outside parent '%s' [%d,%d,%d,%d]\n",
                                 r->name, rx, ry, rw, rh, pr->name, pr->x, pr->y, pr->w, pr->h);
@@ -1055,8 +1060,8 @@ static int run_headless_tests(const char *bmp_output, int snap_w, int snap_h, in
             /* Sibling overlap check: no two rects with same parent may intersect (skip text rects) */
             for (int i = 0; i < ui.rect_count; i++) {
                 for (int j = i + 1; j < ui.rect_count; j++) {
-                    const Rect *a = &ui.rects[i];
-                    const Rect *b = &ui.rects[j];
+                    const UiRect *a = &ui.rects[i];
+                    const UiRect *b = &ui.rects[j];
                     /* Text rects count: labels are parented to their own widget, so a label on a sibling is a real overlap */
                     if (a->parent_id >= 0 && a->parent_id == b->parent_id) {
                         if (a->x < b->x + b->w && a->x + a->w > b->x &&
@@ -1342,10 +1347,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_SIZE:
             if (wp != SIZE_MINIMIZED) {
-                ui.w = (int)(short)LOWORD(lp);
-                ui.h = (int)(short)HIWORD(lp);
-                if (ui.w < MIN_W) ui.w = MIN_W;
-                if (ui.h < MIN_H) ui.h = MIN_H;
+                ui_set_size((int)(short)LOWORD(lp), (int)(short)HIWORD(lp));
             }
             return 0;
         case WM_GETMINMAXINFO: {
@@ -1464,12 +1466,15 @@ static int run_cocoa_window(void) {
             if (type == 2) { ui.mouse_down = false; ui.mouse_released = true; }
             msg1(void, app, "sendEvent:", id, ev);
         }
+        /* Live content size, so the layout reflows instead of the layer stretching one 860x540 image */
+        NSSize sz = msg0(NSRect, view, "frame").size;
+        ui_set_size((int)sz.width, (int)sz.height);
         NSPoint mp = msg0(NSPoint, win, "mouseLocationOutsideOfEventStream");
         ui.mx = (float)mp.x;
         ui.my = (float)ui.h - (float)mp.y;
 
         gui_frame();
-        CGContextRef ctx = CGBitmapContextCreate(ui.px, ui.w, ui.h, 8, ui.w * 4, cs,
+        CGContextRef ctx = CGBitmapContextCreate(ui.px, (size_t)ui.w, (size_t)ui.h, 8, (size_t)ui.w * 4u, cs,
                            (uint32_t)kCGBitmapByteOrder32Little | (uint32_t)kCGImageAlphaNoneSkipFirst);
         CGImageRef img = CGBitmapContextCreateImage(ctx);
         msg1(void, layer, "setContents:", id, (id)img);
@@ -1490,13 +1495,24 @@ static int run_x11_window(void) {
     Display *dpy = XOpenDisplay(NULL);
     if (!dpy) {
         fprintf(stderr, "c99gui: cannot connect to X11 display (running in headless mode)\n");
-        return run_headless_tests(NULL);
+        return run_headless_tests(NULL, WIN_W, WIN_H, 0);
     }
     int scr = DefaultScreen(dpy);
     Window win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 100, 100, WIN_W, WIN_H, 1,
                                      BlackPixel(dpy, scr), WhitePixel(dpy, scr));
+    XSizeHints *hints = XAllocSizeHints();
+    if (hints) {
+        hints->flags = PMinSize | PMaxSize;
+        hints->min_width = MIN_W;
+        hints->min_height = MIN_H;
+        hints->max_width = MAX_BUF_W;
+        hints->max_height = MAX_BUF_H;
+        XSetWMNormalHints(dpy, win, hints);
+        XFree(hints);
+    }
     XStoreName(dpy, win, "Pure C99 Vector GUI");
-    XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask);
+    /* StructureNotifyMask delivers ConfigureNotify, without which the window never learns its new size */
+    XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask);
     Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete, 1);
     XMapWindow(dpy, win);
@@ -1523,20 +1539,19 @@ static int run_x11_window(void) {
                 if (XLookupKeysym(&ev.xkey, 0) == XK_Escape) ui.running = false;
             } else if (ev.type == ConfigureNotify) {
                 if (ev.xconfigure.width != ui.w || ev.xconfigure.height != ui.h) {
-                    ui.w = ev.xconfigure.width;
-                    ui.h = ev.xconfigure.height;
-                    if (ui.w < MIN_W) ui.w = MIN_W;
-                    if (ui.h < MIN_H) ui.h = MIN_H;
+                    ui_set_size(ev.xconfigure.width, ev.xconfigure.height);
+                    /* XDestroyImage frees data too; ui.px is static, so detach it first */
+                    img->data = NULL;
                     XDestroyImage(img);
                     img = XCreateImage(dpy, DefaultVisual(dpy, scr), (unsigned int)DefaultDepth(dpy, scr),
-                                       ZPixmap, 0, (char *)ui.px, ui.w, ui.h, 32, 0);
+                                       ZPixmap, 0, (char *)ui.px, (unsigned int)ui.w, (unsigned int)ui.h, 32, 0);
                 }
             } else if (ev.type == ClientMessage && (Atom)ev.xclient.data.l[0] == wm_delete) {
                 ui.running = false;
             }
         }
         gui_frame();
-        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, ui.w, ui.h);
+        XPutImage(dpy, win, gc, img, 0, 0, 0, 0, (unsigned int)ui.w, (unsigned int)ui.h);
         XFlush(dpy);
 
         struct timespec ts = {0, 16000000L};

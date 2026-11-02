@@ -936,6 +936,10 @@ static int run_cocoa_window(void) {
         NSSize sz = msg0(NSRect, content_view, "frame").size;
         g_win_w = (int)sz.width;
         g_win_h = (int)sz.height;
+        if (g_win_w < WIN_W_MIN) g_win_w = WIN_W_MIN;
+        if (g_win_h < WIN_H_MIN) g_win_h = WIN_H_MIN;
+        if (g_win_w > WIN_W_MAX) g_win_w = WIN_W_MAX;
+        if (g_win_h > WIN_H_MAX) g_win_h = WIN_H_MAX;
         ui.mx = (int)mp.x;
         ui.my = g_win_h - (int)mp.y;
 
