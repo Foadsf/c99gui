@@ -8,24 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.1.0] - Unreleased
 
 ### Added
-- **Four-program consolidation:** All four c99gui variants now ship side-by-side in a single repository:
-  - `c99gui-tui`: Terminal UI (zero dependencies, from branch `tui` aaf0c74)
-  - `c99gui-pixel`: Pixel desktop GUI (from branch `gui` eff0023)
-  - `c99gui-vector`: Vector desktop GUI (from branch `vector-gui` 8e39b21)
-  - `c99gui-suite`: Comprehensive vector GUI suite (from branch `vector-suite` 9a70006)
-- **CI workflow** (`.github/workflows/ci.yml`): Verifies all four programs on Linux (GCC/Clang, X11/headless), macOS (Clang, Cocoa/headless), Windows MSVC (x64), and Windows MSYS2 (UCRT64 GCC) with strict warnings (`-Werror` / `/WX`).
-- **Release workflow** (`.github/workflows/release.yml`): Builds release artifacts for Linux x64, macOS arm64, and Windows x64; supports dry-run mode for testing.
-- **Smoke tests:** `tests/smoke.sh` (GUI programs, reads BMP dimensions from header) and `tests/tui_smoke.sh` (TUI, restored from aaf0c74).
-- **Build system updates:** Makefile, CMakeLists.txt, `build.cmd`, and `scripts/build-matrix.ps1` now build all four programs with distinct names.
+- **All four programs in one repository**, built side by side under distinct names:
+  - `c99gui-tui`: terminal UI (`src/tui/c99gui.c`, from branch `tui` aaf0c74)
+  - `c99gui-pixel`: pixel desktop GUI (`src/pixel/gui.c`, from branch `gui` eff0023)
+  - `c99gui-vector`: vector desktop GUI (`src/vector/gui.c`, from branch `vector-gui` 8e39b21)
+  - `c99gui-suite`: vector GUI suite (`src/suite/gui.c`, from branch `vector-suite` 9a70006)
+- **CI** (`.github/workflows/ci.yml`): compiles all four programs with warnings as errors on Linux (GCC and Clang, X11 and headless), macOS (Clang, Cocoa and headless), Windows MSVC x64 and Windows MSYS2 UCRT64 GCC, then runs the headless `--test` and `--snapshot` checks. Uses Node 24 action versions.
+- **Release workflow** (`.github/workflows/release.yml`): on a `v*` tag, builds Linux x64, macOS arm64 and Windows x64 archives (each with a top-level folder, README and LICENSE), runs the smoke tests, publishes `SHA256SUMS.txt` and takes the release notes from this file. A manual run rehearses everything except publishing.
+- **`scripts/extract-notes.sh`**: extracts one version's section from this file and fails if it is missing or empty. CI runs it on every push.
+- **Smoke tests**: `tests/smoke.sh` reads BMP dimensions from the header and includes truncated and corrupted BMP negative controls; `tests/tui_smoke.sh` is restored from aaf0c74.
 
 ### Changed
-- **README.md:** Honest documentation of all four programs with accurate build commands, CLI options, and CI verification status. Removed unverified claims about Cocoa/X11 backends (now CI-verified).
-- **BMP size validation:** Smoke test now reads width/height from BMP header instead of hardcoding 2,508,854 bytes (which assumed fixed 980x640).
+- **Pixel GUI**: the window is resizable and maximizable (Win32 `WS_OVERLAPPEDWINDOW`, `WM_SIZE`, `WM_GETMINMAXINFO`; X11 `ConfigureNotify`; Cocoa resizable style). The layout reflows from the live window size with a 640x450 minimum, and the waveform fills the remaining height.
+- **Pixel GUI font**: the hand-drawn glyphs (several malformed, e.g. `T`, `%`, `&`, `g`, `y`, `\`) are replaced by the VGA 8x16 font from Debian console-setup (`Lat15-VGA16.psf.gz`), ASCII 32-126, which console-setup states is public domain.
+- **Pixel GUI tests**: every widget records its rectangle while drawing. Tests click widgets by name and check every rectangle on every tab against the window and its parent panel at 640x450 and 1920x1080. `C99GUI_TEST_NEGATIVE=1` renders at 300x200 and must fail.
+- **`--snapshot FILE --size WxH --tab N`** renders exactly one frame of the requested tab and size.
+- **README**: build commands, CLI options and verification status now match the code.
 
 ### Fixed
-- CI workflow now references correct source paths (`src/tui/c99gui.c`, `src/pixel/gui.c`, etc.) instead of non-existent `src/gui.c`.
-- Release workflow includes all four programs in release archives.
-- Documentation no longer claims "13-stage regression suite" or features not present in the actual UI (e.g., "[78%]" readouts on knobs, "ACCENT THEME" in suite).
+- CI referenced a non-existent `src/gui.c`; it now builds the four real sources.
+- Release notes were extracted empty because of a broken awk regex; extraction now uses a fixed-string match and refuses empty output.
+- A failing MSVC `cl.exe` compile could pass the Windows release job; every compile's exit code is now checked.
+- Removed documentation claims that the code did not support, such as a "13-stage regression suite", "[78%]" knob readouts and "ACCENT THEME" in the suite. The 2.0.0 and earlier entries below are kept as originally written and contain such claims.
+
+### Verification limits
+- Cocoa and X11 window behaviour (resize, maximize, input) is compile-checked in CI only; CI runners cannot open windows. Win32 resize and maximize were checked on Windows 11 (window style includes `WS_THICKFRAME` and `WS_MAXIMIZEBOX`; maximize grew the client area from 760x480 to 1536x793).
 
 ## [2.0.0] - 2026-11-01 (branch: `vector-suite`)
 
