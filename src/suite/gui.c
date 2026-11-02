@@ -1988,7 +1988,6 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
         ui.w = 300;
         ui.h = 200;
         ui.toast_timer = 0;
-        int negative_failures = 0;
         for (int tab = 0; tab < 5; tab++) {
             app_tab = tab;
             gui_frame();
@@ -1997,22 +1996,21 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
                 bool inside_window = !(r->x < 0 || r->y < 0 || r->x + r->w > ui.w || r->y + r->h > ui.h);
                 if (!inside_window) {
                     fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside window\n", tab, r->name);
-                    negative_failures++;
+                    ui.test_failed++;
                 }
                 if (r->parent_id >= 0 && r->parent_id < ui.rect_count) {
                     UiRect *p = &ui.uirects[r->parent_id];
                     bool inside_parent = !(r->x < p->x || r->y < p->y || r->x + r->w > p->x + p->w || r->y + r->h > p->y + p->h);
                     if (!inside_parent) {
                         fprintf(stderr, "FAIL: negative: tab %d widget '%s' rect outside parent '%s'\n", tab, r->name, p->name);
-                        negative_failures++;
+                        ui.test_failed++;
                     }
                 }
             }
         }
         ui.test_negative_mode = 0;
-        CHECK(negative_failures > 0, "negative test found bounds failures at 300x200");
-        /* Exit 1 because failed > 0 (expected for negative test) */
-        return 1;
+        printf("passed: %d  failed: %d\n", ui.test_passed, ui.test_failed);
+        return (ui.test_failed > 0) ? 1 : 0;
     }
 
     printf("passed: %d  failed: %d\n", ui.test_passed, ui.test_failed);
