@@ -1381,7 +1381,7 @@ static void gui_frame(void) {
         ui_textbox("Project Name:", txt_name, (int)sizeof(txt_name));
         ui_dropdown("Audio Routing:", profiles, 4, &dd_profile);
 
-        ui_section("MULTI-COLUMN SWITCHES, CHECKBOXES & RADIOS");
+        ui_section("SWITCHES, CHECKBOXES & RADIOS");
         ui_toggle("Sub-Pixel AA", &chk_aa, "Toggle analytical signed-distance anti-aliasing");
         ui_toggle("V-Sync Lock", &chk_vsync, "Lock presentation to 60Hz display refresh");
         ui_checkbox("SIMD Vectorization", &chk_simd);
@@ -1777,8 +1777,8 @@ static int run_headless_tests(const char *bmp_output, int test_w, int test_h, in
     idx = find_rect("node_header0");
     CHECK(idx >= 0, "node_header0 recorded");
     if (idx >= 0) {
-        ui.mx = (float)(ui.rects[idx].x + 10.0f * ui.scale);
-        ui.my = (float)(ui.rects[idx].y + 10.0f * ui.scale);
+        ui.mx = (float)ui.rects[idx].x + 10.0f * ui.scale;
+        ui.my = (float)ui.rects[idx].y + 10.0f * ui.scale;
     }
     ui.mouse_pressed = true;
     ui.mouse_down = true;
